@@ -1,4 +1,4 @@
---Para correr o cable:
+--Para correr o cable
 docker compose build
 docker compose up
 docker compose down
