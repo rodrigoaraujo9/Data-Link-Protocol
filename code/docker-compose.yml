@@ -1,0 +1,10 @@
+version: '3'
+services:
+  virtual-cable:
+    build: .
+    container_name: virtual_cable
+    tty: true
+    stdin_open: true
+    privileged: true # Allow access to virtual serial ports
+    environment:
+      - SOCAT_LOG=1

@@ -1,0 +1,7 @@
+--Para correr o cable:
+docker compose build
+docker compose up
+docker compose down
+
+--Para abrir um terminal ligado ao cabo de rede:
+docker exec -it virtual_cable bash
