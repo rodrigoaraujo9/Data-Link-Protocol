@@ -28,7 +28,17 @@
 // retries and timeout
 #define MAX_RETRIES 3
 #define TIMEOUT_SECONDS 1
+#define READ_RETRIES 5     // Retries for individual byte reads
 
+// Error Codes
+#define ERR_MAX_RETRIES_EXCEEDED -2
+#define ERR_WRITE_FAILED         -3
+#define ERR_READ_TIMEOUT         -4
+#define ERR_INVALID_BCC          -5
+#define ERR_FRAME_REJECTED       -6
+
+enum StateRCV {START, FLAG_RCV, A_RCV, C_RCV, BCC_OK, STOP};
+enum StateSND {SEND_SET, WAIT_UA, STOP};
 
 ////////////////////////////////////////////////
 // LLOPEN
@@ -38,6 +48,7 @@ int llopen(LinkLayer connectionParameters)
     if (openSerialPort(connectionParameters.serialPort,
                        connectionParameters.baudRate) < 0)
     {
+        printf("[ERROR] Failed to open serial port\n");
         return -1;
     }
 
@@ -46,59 +57,126 @@ int llopen(LinkLayer connectionParameters)
     if (connectionParameters.role == LlTx)
     {
         unsigned char setFrame[5] = {FLAG, ADDR_TX_COMMAND, CTRL_SET, 0x00, FLAG};
-        setFrame[3] = BCC1(setFrame[1], setFrame[2]);  // calculate BCC1
+        setFrame[3] = BCC1(setFrame[1], setFrame[2]);  // Calculate BCC1
 
-        enum State {SEND_SET, WAIT_UA, STOP};
-        enum State state = SEND_SET;
+        enum StateSND state = SEND_SET;
         unsigned char uaFrame[5] = {0};
         int retry = 0;
+        int readRetryCount = 0;  // Counter for read retries
 
-        while (state != STOP && retry < MAX_RETRIES){
-            switch(state){
+        while (state != STOP && retry < MAX_RETRIES) {
+            switch(state) {
                 case SEND_SET:
-                    if (writeBytesSerialPort(setFrame, sizeof(setFrame)) < 0) return -1;
+                    if (writeBytesSerialPort(setFrame, sizeof(setFrame)) < 0){
+                        printf("[ERROR] Failed to send SET frame\n");
+                        return ERR_WRITE_FAILED;
+                    } 
                     state = WAIT_UA;
                     break;
 
                 case WAIT_UA:
+                    enum StateRCV stateR = START;
                     unsigned char byte;
                     int bytesRead = 0;
-                    for (int i = 0; i < 5; i++)
+
+                    while (stateR != STOP && bytesRead < 5)
                     {
-                        int res = readByteSerialPort(&byte);
-                        if (res <= 0) break;
-                        bytesRead++;
-                        uaFrame[i] = byte;
+                        int res = readByteSerialPort(&byte); 
+                        if (res <= 0)
+                        {
+                            if (++readRetryCount >= READ_RETRIES)
+                            {
+                                printf("[ERROR] Maximum read retries exceeded while waiting for UA frame\n");
+                                return ERR_MAX_RETRIES_EXCEEDED;
+                            }
+                            printf("[WARN] Retrying read (%d/%d)\n", readRetryCount, READ_RETRIES);
+                            continue;  // Retry reading
+                        }
+                        readRetryCount = 0;
+                        uaFrame[bytesRead++] = byte;
+
+                        switch (stateR)
+                        {
+                            case START:
+                                if (byte == FLAG) stateR = FLAG_RCV;
+                                break;
+
+                            case FLAG_RCV:
+                                if (byte == ADDR_RX_COMMAND) {
+                                    stateR = A_RCV;
+                                } else if (byte != FLAG) {
+                                    stateR = START; 
+                                }
+                                break;
+
+                            case A_RCV:
+                                if (byte == CTRL_UA) {
+                                    stateR = C_RCV;
+                                } else if (byte == FLAG) {
+                                    stateR = FLAG_RCV;
+                                } else {
+                                    stateR = START;
+                                }
+                                break;
+
+                            case C_RCV:
+                                if (byte == (uaFrame[1] ^ uaFrame[2])) {
+                                    stateR = BCC_OK;
+                                } else if (byte == FLAG) {
+                                    stateR = FLAG_RCV; 
+                                } else {
+                                    stateR = START; 
+                                }
+                                break;
+
+                            case BCC_OK:
+                                if (byte == FLAG) {
+                                    stateR = STOP; 
+                                } else {
+                                    stateR = START; 
+                                }
+                                break;
+                        }
                     }
 
-                    if (bytesRead == 5 && uaFrame[2] == CTRL_UA && uaFrame[1] == ADDR_RX_COMMAND 
-                    && uaFrame[3] == BCC1(uaFrame[1], uaFrame[2])) 
+                    if (stateR == STOP) {
+                        printf("[INFO] UA frame successfully received, connection established\n");
                         return 1;
-                    else
-                    {
-                        state = SEND_SET;
+                    } else {
                         retry++;
+                        printf("[WARN] Retrying to send SET frame, attempt %d/%d\n", retry, MAX_RETRIES);
+                        state = SEND_SET;  // Retry sending SET
                     }
-
                     break;
             }
         }
-        return -1; //failed
+        printf("[ERROR] Maximum retries exceeded while trying to establish connection\n");
+        return ERR_MAX_RETRIES_EXCEEDED;
     }
 
 
     else if (connectionParameters.role == LlRx)
     {
-        enum State {START, FLAG_RCV, A_RCV, C_RCV, BCC_OK, STOP};
-        enum State state = START;
+        enum StateRCV state = START;
         unsigned char byte;
         unsigned char setFrame[5];
-        int i = 0;
+        int readRetryCount = 0; 
 
         while (state != STOP)
         {
             int res = readByteSerialPort(&byte); 
-            if (res <= 0) return -1; 
+            if (res <= 0)
+            {
+                // Failed to read byte, handle retry logic
+                if (++readRetryCount >= READ_RETRIES)
+                {
+                    printf("[ERROR] Maximum read retries exceeded while waiting for SET frame\n");
+                    return ERR_MAX_RETRIES_EXCEEDED;
+                }
+                printf("[WARN] Retrying read (%d/%d)\n", readRetryCount, READ_RETRIES);
+                continue;
+            }
+            readRetryCount = 0;
 
             switch (state)
             {
@@ -140,9 +218,14 @@ int llopen(LinkLayer connectionParameters)
         unsigned char uaFrame[5] = {FLAG, ADDR_RX_COMMAND, CTRL_UA, 0x00, FLAG};
         uaFrame[3] = BCC1(uaFrame[1], uaFrame[2]);  // Calculate BCC1
         if (writeBytesSerialPort(uaFrame, sizeof(uaFrame)) < 0)
-            return -1;
+        {
+            printf("[ERROR] Failed to send UA frame\n");
+            return ERR_WRITE_FAILED;
+        }
+        printf("[INFO] UA frame sent successfully\n");
+        printf("[INFO] SUCCESS!\n");
     }
-
+    
     return 1;
 }
 
