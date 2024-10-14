@@ -25,8 +25,10 @@
 // BCC1 calculation
 #define BCC1(addr, ctrl) ((addr) ^ (ctrl))  // Address XOR Control field
 
+// retries and timeout
 #define MAX_RETRIES 3
 #define TIMEOUT_SECONDS 1
+
 
 ////////////////////////////////////////////////
 // LLOPEN
@@ -44,28 +46,42 @@ int llopen(LinkLayer connectionParameters)
     if (connectionParameters.role == LlTx)
     {
         unsigned char setFrame[5] = {FLAG, ADDR_TX_COMMAND, CTRL_SET, 0x00, FLAG};
-        setFrame[3] = BCC1(setFrame[1], setFrame[2]); // calculate BCC1
-        
-        for (int retry = 0; retry < MAX_RETRIES; retry++) 
-        {
-            // send set frame
-            if (writeBytesSerialPort(setFrame, sizeof(setFrame)) < 0) return -1;
+        setFrame[3] = BCC1(setFrame[1], setFrame[2]);  // calculate BCC1
 
-            // wait for ua frame with timeout
-            unsigned char uaFrame[5] = {0};
-            int bytesRead = 0;
-            for (int i = 0; i < 5; i++)
-            {
-                int res = readByteSerialPort(&uaFrame[i]);
-                if (res <= 0) break;
-                bytesRead++;
+        enum State {SEND_SET, WAIT_UA, STOP};
+        enum State state = SEND_SET;
+        unsigned char uaFrame[5] = {0};
+        int retry = 0;
+
+        while (state != STOP && retry < MAX_RETRIES){
+            switch(state){
+                case SEND_SET:
+                    if (writeBytesSerialPort(setFrame, sizeof(setFrame)) < 0) return -1;
+                    state = WAIT_UA;
+                    break;
+
+                case WAIT_UA:
+                    unsigned char byte;
+                    int bytesRead = 0;
+                    for (int i = 0; i < 5; i++)
+                    {
+                        int res = readByteSerialPort(&byte);
+                        if (res <= 0) break;
+                        bytesRead++;
+                        uaFrame[i] = byte;
+                    }
+
+                    if (bytesRead == 5 && uaFrame[2] == CTRL_UA && uaFrame[1] == ADDR_RX_COMMAND 
+                    && uaFrame[3] == BCC1(uaFrame[1], uaFrame[2])) 
+                        return 1;
+                    else
+                    {
+                        state = SEND_SET;
+                        retry++;
+                    }
+
+                    break;
             }
-
-            // verify ua frame
-            if (bytesRead == 5 && uaFrame[2] == CTRL_UA && uaFrame[1] 
-            == ADDR_RX_COMMAND && uaFrame[3] == BCC1(uaFrame[1], uaFrame[2])) 
-                return 1;
-
         }
         return -1; //failed
     }
@@ -73,27 +89,58 @@ int llopen(LinkLayer connectionParameters)
 
     else if (connectionParameters.role == LlRx)
     {
-        // wait for set frame
-        unsigned char setFrame[5] = {0};
-        int bytesRead = 0;
+        enum State {START, FLAG_RCV, A_RCV, C_RCV, BCC_OK, STOP};
+        enum State state = START;
+        unsigned char byte;
+        unsigned char setFrame[5];
+        int i = 0;
 
-        for (int i = 0; i < 5; i++)
+        while (state != STOP)
         {
-            int res = readByteSerialPort(&setFrame[i]);  // Read one byte at a time
-            if (res <= 0) break;
-            bytesRead++;
+            int res = readByteSerialPort(&byte); 
+            if (res <= 0) return -1; 
+
+            switch (state)
+            {
+                case START:
+                    if (byte == FLAG) state = FLAG_RCV;
+                    break;
+
+                case FLAG_RCV:
+                    if (byte == ADDR_TX_COMMAND) {
+                        state = A_RCV;
+                        setFrame[1] = byte;
+                    }
+                    else if (byte != FLAG) state = START;  
+                    break;
+
+                case A_RCV:
+                    if (byte == CTRL_SET) {
+                        state = C_RCV;
+                        setFrame[2] = byte;
+                    }
+                    else if (byte == FLAG) state = FLAG_RCV; 
+                    else state = START; 
+                    break;
+
+                case C_RCV:
+                    if (byte == (setFrame[1] ^ setFrame[2])) state = BCC_OK; 
+                    else if (byte == FLAG) state = FLAG_RCV; 
+                    else state = START;  
+                    break;
+
+                case BCC_OK:
+                    if (byte == FLAG) state = STOP;  
+                    else state = START; 
+                    break;
+            }
         }
 
-        // verify set frame
-        if (setFrame[2] != CTRL_SET || setFrame[1] != ADDR_TX_COMMAND || setFrame[3] != BCC1(setFrame[1], setFrame[2])) return -1; 
-
-        // create the ua frame
+        // After successfully receiving the SET frame, send UA frame
         unsigned char uaFrame[5] = {FLAG, ADDR_RX_COMMAND, CTRL_UA, 0x00, FLAG};
-        uaFrame[3] = BCC1(uaFrame[1], uaFrame[2]); //calcculate BCC1
-
-        // Send the UA frame
-        if (writeBytesSerialPort(uaFrame, sizeof(uaFrame)) < 0) return -1;
-
+        uaFrame[3] = BCC1(uaFrame[1], uaFrame[2]);  // Calculate BCC1
+        if (writeBytesSerialPort(uaFrame, sizeof(uaFrame)) < 0)
+            return -1;
     }
 
     return 1;
@@ -125,7 +172,6 @@ int llread(unsigned char *packet)
 int llclose(int showStatistics)
 {
     // TODO
-
     int clstat = closeSerialPort();
     return clstat;
 }
