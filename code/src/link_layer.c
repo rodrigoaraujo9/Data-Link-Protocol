@@ -40,6 +40,12 @@
 enum StateRCV {START, FLAG_RCV, A_RCV, C_RCV, BCC_OK, STOP};
 enum StateSND {SEND_SET, WAIT_UA, STOP};
 
+// Global variables to handle alarm logic
+volatile int alarmTriggered = FALSE;
+int alarmCount = 0;
+int timeout = TIMEOUT_SECONDS;  // Set your desired timeout
+
+
 ////////////////////////////////////////////////
 // LLOPEN
 ////////////////////////////////////////////////
@@ -71,6 +77,11 @@ int llopen(LinkLayer connectionParameters)
                         printf("[ERROR] Failed to send SET frame\n");
                         return ERR_WRITE_FAILED;
                     } 
+
+                    printf("[INFO] Sent SET frame, setting alarm for timeout\n");
+                    alarm(timeout);  // Start alarm with the configured timeout
+                    alarmTriggered = FALSE;
+
                     state = WAIT_UA;
                     break;
 
@@ -79,18 +90,17 @@ int llopen(LinkLayer connectionParameters)
                     unsigned char byte;
                     int bytesRead = 0;
 
-                    while (stateR != STOP && bytesRead < 5)
+                    while (stateR != STOP && bytesRead < 5 && alarmTriggered == FALSE)
                     {
                         int res = readByteSerialPort(&byte); 
                         if (res <= 0)
                         {
-                            if (++readRetryCount >= READ_RETRIES)
-                            {
-                                printf("[ERROR] Maximum read retries exceeded while waiting for UA frame\n");
-                                return ERR_MAX_RETRIES_EXCEEDED;
+                            if (alarmTriggered) {
+                                printf("[WARN] Timeout while waiting for UA frame\n");
+                                alarmTriggered = FALSE;
+                                break;  // Exit the loop to retry
                             }
-                            printf("[WARN] Retrying read (%d/%d)\n", readRetryCount, READ_RETRIES);
-                            continue;  // Retry reading
+                            continue;
                         }
                         readRetryCount = 0;
                         uaFrame[bytesRead++] = byte;
@@ -132,6 +142,7 @@ int llopen(LinkLayer connectionParameters)
                             case BCC_OK:
                                 if (byte == FLAG) {
                                     stateR = STOP; 
+                                    alarm(0);
                                 } else {
                                     stateR = START; 
                                 }
@@ -141,9 +152,11 @@ int llopen(LinkLayer connectionParameters)
 
                     if (stateR == STOP) {
                         printf("[INFO] UA frame successfully received, connection established\n");
+                        alarm(0);
                         return 1;
                     } else {
                         retry++;
+                        alarm(0);  // Cancel alarm
                         printf("[WARN] Retrying to send SET frame, attempt %d/%d\n", retry, MAX_RETRIES);
                         state = SEND_SET;  // Retry sending SET
                     }
@@ -151,6 +164,7 @@ int llopen(LinkLayer connectionParameters)
             }
         }
         printf("[ERROR] Maximum retries exceeded while trying to establish connection\n");
+        alarm(0);
         return ERR_MAX_RETRIES_EXCEEDED;
     }
 
@@ -171,6 +185,7 @@ int llopen(LinkLayer connectionParameters)
                 if (++readRetryCount >= READ_RETRIES)
                 {
                     printf("[ERROR] Maximum read retries exceeded while waiting for SET frame\n");
+                    alarmTriggered = FALSE;
                     return ERR_MAX_RETRIES_EXCEEDED;
                 }
                 printf("[WARN] Retrying read (%d/%d)\n", readRetryCount, READ_RETRIES);
@@ -223,6 +238,7 @@ int llopen(LinkLayer connectionParameters)
             return ERR_WRITE_FAILED;
         }
         printf("[INFO] UA frame sent successfully\n");
+        alarm(0);
         printf("[INFO] SUCCESS!\n");
     }
     
