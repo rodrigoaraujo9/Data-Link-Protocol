@@ -1,10 +1,29 @@
-version: '3'
 services:
-  virtual-cable:
-    build: .
-    container_name: virtual_cable
+  cable:
+    build:
+      context: .
+    container_name: virtual-cable
+    command: socat -d -d pty,raw,echo=0 pty,raw,echo=0
     tty: true
-    stdin_open: true
-    privileged: true # Allow access to virtual serial ports
-    environment:
-      - SOCAT_LOG=1
+    volumes:
+      - /dev/pts:/dev/pts  # Share the PTS directory with other containers
+
+  tx:
+    build:
+      context: .
+    depends_on:
+      - cable
+    command: ./bin/main /dev/pts/1 9600 tx penguin.gif
+    container_name: transmitter
+    volumes:
+      - /dev/pts:/dev/pts  # Access the shared PTS directory
+
+  rx:
+    build:
+      context: .
+    depends_on:
+      - cable
+    command: ./bin/main /dev/pts/2 9600 rx penguin-received.gif
+    container_name: receiver
+    volumes:
+      - /dev/pts:/dev/pts  # Access the shared PTS directory

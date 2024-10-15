@@ -2,6 +2,8 @@
 
 #include "link_layer.h"
 #include "serial_port.h"
+#include <stdio.h>
+#include <unistd.h>
 
 // MISC
 #define _POSIX_SOURCE 1 // POSIX compliant source
@@ -37,8 +39,8 @@
 #define ERR_INVALID_BCC          -5
 #define ERR_FRAME_REJECTED       -6
 
-enum StateRCV {START, FLAG_RCV, A_RCV, C_RCV, BCC_OK, STOP};
-enum StateSND {SEND_SET, WAIT_UA, STOP};
+enum StateSND {SEND_SET, WAIT_UA, SND_STOP};
+enum StateRCV {START, FLAG_RCV, A_RCV, C_RCV, BCC_OK, RCV_STOP};
 
 // Global variables to handle alarm logic
 volatile int alarmTriggered = FALSE;
@@ -58,8 +60,6 @@ int llopen(LinkLayer connectionParameters)
         return -1;
     }
 
-    // TODO
-
     if (connectionParameters.role == LlTx)
     {
         unsigned char setFrame[5] = {FLAG, ADDR_TX_COMMAND, CTRL_SET, 0x00, FLAG};
@@ -70,9 +70,9 @@ int llopen(LinkLayer connectionParameters)
         int retry = 0;
         int readRetryCount = 0;  // Counter for read retries
 
-        while (state != STOP && retry < MAX_RETRIES) {
+        while (state != SND_STOP && retry < MAX_RETRIES) {
             switch(state) {
-                case SEND_SET:
+                case SEND_SET: {
                     if (writeBytesSerialPort(setFrame, sizeof(setFrame)) < 0){
                         printf("[ERROR] Failed to send SET frame\n");
                         return ERR_WRITE_FAILED;
@@ -84,13 +84,14 @@ int llopen(LinkLayer connectionParameters)
 
                     state = WAIT_UA;
                     break;
+                }
 
-                case WAIT_UA:
+                case WAIT_UA: {
                     enum StateRCV stateR = START;
                     unsigned char byte;
                     int bytesRead = 0;
 
-                    while (stateR != STOP && bytesRead < 5 && alarmTriggered == FALSE)
+                    while (stateR != RCV_STOP && bytesRead < 5 && alarmTriggered == FALSE)
                     {
                         int res = readByteSerialPort(&byte); 
                         if (res <= 0)
@@ -141,7 +142,7 @@ int llopen(LinkLayer connectionParameters)
 
                             case BCC_OK:
                                 if (byte == FLAG) {
-                                    stateR = STOP; 
+                                    stateR = RCV_STOP; 
                                     alarm(0);
                                 } else {
                                     stateR = START; 
@@ -150,7 +151,7 @@ int llopen(LinkLayer connectionParameters)
                         }
                     }
 
-                    if (stateR == STOP) {
+                    if (stateR == RCV_STOP) {
                         printf("[INFO] UA frame successfully received, connection established\n");
                         alarm(0);
                         return 1;
@@ -161,14 +162,13 @@ int llopen(LinkLayer connectionParameters)
                         state = SEND_SET;  // Retry sending SET
                     }
                     break;
+                }
             }
         }
         printf("[ERROR] Maximum retries exceeded while trying to establish connection\n");
         alarm(0);
         return ERR_MAX_RETRIES_EXCEEDED;
     }
-
-
     else if (connectionParameters.role == LlRx)
     {
         enum StateRCV state = START;
@@ -176,12 +176,11 @@ int llopen(LinkLayer connectionParameters)
         unsigned char setFrame[5];
         int readRetryCount = 0; 
 
-        while (state != STOP)
+        while (state != RCV_STOP)
         {
             int res = readByteSerialPort(&byte); 
             if (res <= 0)
             {
-                // Failed to read byte, handle retry logic
                 if (++readRetryCount >= READ_RETRIES)
                 {
                     printf("[ERROR] Maximum read retries exceeded while waiting for SET frame\n");
@@ -223,7 +222,7 @@ int llopen(LinkLayer connectionParameters)
                     break;
 
                 case BCC_OK:
-                    if (byte == FLAG) state = STOP;  
+                    if (byte == FLAG) state = RCV_STOP;  
                     else state = START; 
                     break;
             }
