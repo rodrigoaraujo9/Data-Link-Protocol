@@ -39,6 +39,7 @@
 #define ERR_READ_TIMEOUT         -4
 #define ERR_INVALID_BCC          -5
 #define ERR_FRAME_REJECTED       -6
+#define ERR_WRITE_TIMEOUT         -7
 
 enum StateSND {SEND_SET, WAIT_UA, SND_STOP};
 enum StateRCV {START, FLAG_RCV, A_RCV, C_RCV, BCC_OK, RCV_STOP};
@@ -61,7 +62,7 @@ void handle_alarm(int sig) {
 ////////////////////////////////////////////////
 int llopen(LinkLayer connectionParameters)
 {
-    signal(SIGALRM, handle_alarm);  // Setup signal handler for alarm
+    signal(SIGALRM, handle_alarm);  
     if (openSerialPort(connectionParameters.serialPort, connectionParameters.baudRate) < 0)
     {
         printf("[ERROR] Failed to open serial port\n");
@@ -70,7 +71,7 @@ int llopen(LinkLayer connectionParameters)
 
     if (connectionParameters.role == LlTx) {
         unsigned char setFrame[5] = {FLAG, ADDR_TX_COMMAND, CTRL_SET, 0x00, FLAG};
-        setFrame[3] = BCC1(setFrame[1], setFrame[2]);  // Calculate BCC1
+        setFrame[3] = BCC1(setFrame[1], setFrame[2]);
 
         enum StateSND state = SEND_SET;
         unsigned char uaFrame[5] = {0};
@@ -85,8 +86,8 @@ int llopen(LinkLayer connectionParameters)
                     } 
 
                     printf("[INFO] Sent SET frame, setting alarm for 1 second retry\n");
-                    alarmTriggered = 0;  // Reset the flag
-                    alarm(1);            // Set alarm for 1 second interval for retries
+                    alarmTriggered = 0; 
+                    alarm(1);           
 
                     state = WAIT_UA;
                     break;
@@ -104,12 +105,12 @@ int llopen(LinkLayer connectionParameters)
                                 retry++;
                                 if (retry >= MAX_RETRIES) {
                                     printf("[ERROR] Maximum retries exceeded while trying to establish connection\n");
-                                    alarm(0);  // Disable the alarm
+                                    alarm(0); 
                                     return ERR_MAX_RETRIES_EXCEEDED;
                                 }
                                 printf("[WARN] Timeout while waiting for UA frame. Retrying... (%d/%d)\n", retry, MAX_RETRIES);
-                                alarmTriggered = 0;  // Reset flag for next retry
-                                state = SEND_SET;     // Retry sending the SET frame
+                                alarmTriggered = 0; 
+                                state = SEND_SET;     
                                 break;
                             }
                             continue;
@@ -117,7 +118,6 @@ int llopen(LinkLayer connectionParameters)
 
                         uaFrame[bytesRead++] = byte;
 
-                        // State machine for receiving UA
                         switch (stateR) {
                             case START:
                                 if (byte == FLAG) stateR = FLAG_RCV;
@@ -149,8 +149,8 @@ int llopen(LinkLayer connectionParameters)
 
                     if (stateR == RCV_STOP) {
                         printf("[INFO] UA frame successfully received, connection established\n");
-                        alarm(0);  // Disable the alarm
-                        return 1;  // Success
+                        alarm(0);  
+                        return 1; 
                     }
                     break;
                 }
@@ -158,7 +158,7 @@ int llopen(LinkLayer connectionParameters)
         }
 
         printf("[ERROR] Maximum retries exceeded while trying to establish connection\n");
-        alarm(0);  // Cancel the alarm
+        alarm(0);
         return ERR_MAX_RETRIES_EXCEEDED;
     }
     else if (connectionParameters.role == LlRx)
@@ -170,8 +170,8 @@ int llopen(LinkLayer connectionParameters)
         unsigned char setFrame[5];
         int retry = 0;
 
-        alarm(1);  // Set the alarm to trigger every 1 second
-        alarmTriggered = 0;  // Reset alarm flag
+        alarm(1); 
+        alarmTriggered = 0; 
 
         while (state != RCV_STOP && retry < MAX_RETRIES) 
         {
@@ -185,9 +185,9 @@ int llopen(LinkLayer connectionParameters)
                         return ERR_MAX_RETRIES_EXCEEDED;
                     }
                     printf("[ERROR] Timeout while waiting for SET frame, retrying... (%d/%d)\n", retry, MAX_RETRIES);
-                    alarmTriggered = 0;  // Reset flag
-                    state = START;       // Retry state machine
-                    alarm(1);            // Retry after 1 second
+                    alarmTriggered = 0; 
+                    state = START;       
+                    alarm(1);            
                     continue;
                 }
                 continue;
@@ -223,7 +223,7 @@ int llopen(LinkLayer connectionParameters)
                     break;
 
                 case BCC_OK:
-                    if (byte == FLAG) state = RCV_STOP;  // Successfully received SET frame
+                    if (byte == FLAG) state = RCV_STOP; 
                     else state = START; 
                     break;
             }
@@ -236,16 +236,15 @@ int llopen(LinkLayer connectionParameters)
             if (alarmTriggered) {
                 retry++;
                 printf("[ERROR] Timeout reached while waiting for SET frame, retrying... (%d/%d)\n", retry, MAX_RETRIES);
-                alarmTriggered = 0;    // Reset the flag for the next retry
-                alarm(1);              // Retry after 1 second
+                alarmTriggered = 0;    
+                alarm(1);              
             }
         }
 
-        alarm(0);  // Cancel the alarm
+        alarm(0);  
 
-        // Send UA frame in response to the SET frame
         unsigned char uaFrame[5] = {FLAG, ADDR_RX_COMMAND, CTRL_UA, 0x00, FLAG};
-        uaFrame[3] = BCC1(uaFrame[1], uaFrame[2]);  // Calculate BCC1
+        uaFrame[3] = BCC1(uaFrame[1], uaFrame[2]); 
 
         if (writeBytesSerialPort(uaFrame, sizeof(uaFrame)) < 0)
         {
@@ -268,7 +267,49 @@ int llwrite(const unsigned char *buf, int bufSize)
 {
     // TODO
 
-    return 0;
+    int overhead = 6;  // 2 flags + Address + Control + BCC1 + BCC2
+    int frameSize = bufSize + overhead;
+
+    unsigned char frame[frameSize];
+    int frameIndex = 0;
+    int index = 0;
+    static int Ns = 0;
+    unsigned char bcc2 = 0;
+
+    frame[index++] = FLAG;
+    frame[index++] = ADDR_TX_COMMAND; 
+    if (Ns == 0) {
+    frame[index++] = CTRL_RR0;
+    } else {
+    frame[index++] = CTRL_RR1;
+    }
+    frame[index++] = BCC1(frame[1], frame[2]);
+
+    for (int i = 0; i < bufSize; i++) {
+        if (buf[i] == FLAG) {
+            frame[index++] = 0x7D;  
+            frame[index++] = 0x5E;  
+        } else if (buf[i] == 0x7D) {
+            frame[index++] = 0x7D; 
+            frame[index++] = 0x5D;  
+        } else {
+            frame[index++] = buf[i];
+        }
+        bcc2 ^= buf[i];
+    }
+
+    frame[index++] = bcc2;
+
+    frame[index++] = FLAG;
+
+    int result = writeBytesSerialPort(frame, index);
+
+    if (result < 0) {
+        return ERR_WRITE_FAILED; 
+    }
+
+    return bufSize;
+    
 }
 
 ////////////////////////////////////////////////
