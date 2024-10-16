@@ -29,7 +29,7 @@
 #define BCC1(addr, ctrl) ((addr) ^ (ctrl))  // Address XOR Control field
 
 // retries and timeout
-#define MAX_RETRIES 3
+#define MAX_RETRIES 10
 #define TIMEOUT_SECONDS 3
 #define READ_RETRIES 5     // Retries for individual byte reads
 
@@ -77,16 +77,16 @@ int llopen(LinkLayer connectionParameters)
         int retry = 0;
 
         while (state != SND_STOP && retry < MAX_RETRIES) {
-            switch(state) {
+            switch (state) {
                 case SEND_SET: {
                     if (writeBytesSerialPort(setFrame, sizeof(setFrame)) < 0) {
                         printf("[ERROR] Failed to send SET frame\n");
                         return ERR_WRITE_FAILED;
                     } 
 
-                    printf("[INFO] Sent SET frame, setting alarm for timeout\n");
+                    printf("[INFO] Sent SET frame, setting alarm for 1 second retry\n");
                     alarmTriggered = 0;  // Reset the flag
-                    alarm(timeout);      // Start the alarm with timeout
+                    alarm(1);            // Set alarm for 1 second interval for retries
 
                     state = WAIT_UA;
                     break;
@@ -101,9 +101,16 @@ int llopen(LinkLayer connectionParameters)
                         int res = readByteSerialPort(&byte);
                         if (res <= 0) {
                             if (alarmTriggered) {
-                                printf("[WARN] Timeout while waiting for UA frame\n");
-                                alarmTriggered = 0;  // Reset flag for next cycle
-                                break;  // Exit loop to retry
+                                retry++;
+                                if (retry >= MAX_RETRIES) {
+                                    printf("[ERROR] Maximum retries exceeded while trying to establish connection\n");
+                                    alarm(0);  // Disable the alarm
+                                    return ERR_MAX_RETRIES_EXCEEDED;
+                                }
+                                printf("[WARN] Timeout while waiting for UA frame. Retrying... (%d/%d)\n", retry, MAX_RETRIES);
+                                alarmTriggered = 0;  // Reset flag for next retry
+                                state = SEND_SET;     // Retry sending the SET frame
+                                break;
                             }
                             continue;
                         }
@@ -143,17 +150,7 @@ int llopen(LinkLayer connectionParameters)
                     if (stateR == RCV_STOP) {
                         printf("[INFO] UA frame successfully received, connection established\n");
                         alarm(0);  // Disable the alarm
-                        return 1;
-                    } else {
-                        retry++;
-                        if (retry >= MAX_RETRIES) {
-                            printf("[ERROR] Maximum retries exceeded while trying to establish connection\n");
-                            alarm(0);  // Cancel the alarm
-                            return ERR_MAX_RETRIES_EXCEEDED;
-                        }
-                        alarm(0);  // Cancel the current alarm
-                        printf("[WARN] Retrying to send SET frame, attempt %d/%d\n", retry, MAX_RETRIES);
-                        state = SEND_SET;  // Retry sending SET
+                        return 1;  // Success
                     }
                     break;
                 }
@@ -166,40 +163,35 @@ int llopen(LinkLayer connectionParameters)
     }
     else if (connectionParameters.role == LlRx)
     {
-        // Setup signal handler for SIGALRM to handle timeout
         signal(SIGALRM, handle_alarm);
 
         enum StateRCV state = START;
         unsigned char byte;
         unsigned char setFrame[5];
-        int readRetryCount = 0; 
+        int retry = 0;
 
-        // Start the alarm with the timeout value
-        alarm(connectionParameters.timeout);  // Timeout in seconds
+        alarm(1);  // Set the alarm to trigger every 1 second
         alarmTriggered = 0;  // Reset alarm flag
 
-        while (state != RCV_STOP && !alarmTriggered)  // Exit if state is RCV_STOP or timeout occurs
+        while (state != RCV_STOP && retry < MAX_RETRIES) 
         {
             int res = readByteSerialPort(&byte); 
             if (res <= 0)
             {
-                if (++readRetryCount >= READ_RETRIES)
-                {
-                    printf("[ERROR] Maximum read retries exceeded while waiting for SET frame\n");
-                    alarm(0);  // Stop alarm if retries exceeded
-                    return ERR_MAX_RETRIES_EXCEEDED;
-                }
-
                 if (alarmTriggered) {
-                    printf("[ERROR] Timeout while waiting for SET frame\n");
-                    return ERR_READ_TIMEOUT;
+                    retry++;
+                    if (retry >= MAX_RETRIES) {
+                        printf("[ERROR] Maximum retries exceeded while waiting for SET frame\n");
+                        return ERR_MAX_RETRIES_EXCEEDED;
+                    }
+                    printf("[ERROR] Timeout while waiting for SET frame, retrying... (%d/%d)\n", retry, MAX_RETRIES);
+                    alarmTriggered = 0;  // Reset flag
+                    state = START;       // Retry state machine
+                    alarm(1);            // Retry after 1 second
+                    continue;
                 }
-
-                printf("[WARN] Retrying read (%d/%d)\n", readRetryCount, READ_RETRIES);
                 continue;
             }
-            
-            readRetryCount = 0;  // Reset retry counter after successful read
 
             switch (state)
             {
@@ -236,9 +228,16 @@ int llopen(LinkLayer connectionParameters)
                     break;
             }
 
+            if (alarmTriggered && retry >= MAX_RETRIES) {
+                printf("[ERROR] Maximum retries exceeded while waiting for SET frame\n");
+                return ERR_MAX_RETRIES_EXCEEDED;
+            }
+
             if (alarmTriggered) {
-                printf("[ERROR] Timeout reached while waiting for SET frame\n");
-                return ERR_READ_TIMEOUT;
+                retry++;
+                printf("[ERROR] Timeout reached while waiting for SET frame, retrying... (%d/%d)\n", retry, MAX_RETRIES);
+                alarmTriggered = 0;    // Reset the flag for the next retry
+                alarm(1);              // Retry after 1 second
             }
         }
 
@@ -257,7 +256,7 @@ int llopen(LinkLayer connectionParameters)
         printf("[INFO] UA frame sent successfully\n");
         printf("[INFO] SUCCESS!\n");
     }
-    
+
     return 1;
 }
 
