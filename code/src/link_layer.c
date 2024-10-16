@@ -4,6 +4,7 @@
 #include "serial_port.h"
 #include <stdio.h>
 #include <unistd.h>
+#include <sys/signal.h>
 
 // MISC
 #define _POSIX_SOURCE 1 // POSIX compliant source
@@ -29,7 +30,7 @@
 
 // retries and timeout
 #define MAX_RETRIES 3
-#define TIMEOUT_SECONDS 1
+#define TIMEOUT_SECONDS 3
 #define READ_RETRIES 5     // Retries for individual byte reads
 
 // Error Codes
@@ -48,39 +49,44 @@ int alarmCount = 0;
 int timeout = TIMEOUT_SECONDS;  // Set your desired timeout
 
 
+void handle_alarm(int sig) {
+    alarmTriggered = 1;  // Set the flag when the alarm triggers
+    alarmCount++;        // Increment alarm count
+    printf("[ALARM] Timeout occurred. Alarm count: %d seconds.\n", alarmCount);
+    alarm(1);  // Set next alarm for 1 second
+}
+
 ////////////////////////////////////////////////
 // LLOPEN
 ////////////////////////////////////////////////
 int llopen(LinkLayer connectionParameters)
 {
-    if (openSerialPort(connectionParameters.serialPort,
-                       connectionParameters.baudRate) < 0)
+    signal(SIGALRM, handle_alarm);  // Setup signal handler for alarm
+    if (openSerialPort(connectionParameters.serialPort, connectionParameters.baudRate) < 0)
     {
         printf("[ERROR] Failed to open serial port\n");
         return -1;
     }
 
-    if (connectionParameters.role == LlTx)
-    {
+    if (connectionParameters.role == LlTx) {
         unsigned char setFrame[5] = {FLAG, ADDR_TX_COMMAND, CTRL_SET, 0x00, FLAG};
         setFrame[3] = BCC1(setFrame[1], setFrame[2]);  // Calculate BCC1
 
         enum StateSND state = SEND_SET;
         unsigned char uaFrame[5] = {0};
         int retry = 0;
-        int readRetryCount = 0;  // Counter for read retries
 
         while (state != SND_STOP && retry < MAX_RETRIES) {
             switch(state) {
                 case SEND_SET: {
-                    if (writeBytesSerialPort(setFrame, sizeof(setFrame)) < 0){
+                    if (writeBytesSerialPort(setFrame, sizeof(setFrame)) < 0) {
                         printf("[ERROR] Failed to send SET frame\n");
                         return ERR_WRITE_FAILED;
                     } 
 
                     printf("[INFO] Sent SET frame, setting alarm for timeout\n");
-                    alarm(timeout);  // Start alarm with the configured timeout
-                    alarmTriggered = FALSE;
+                    alarmTriggered = 0;  // Reset the flag
+                    alarm(timeout);      // Start the alarm with timeout
 
                     state = WAIT_UA;
                     break;
@@ -91,73 +97,61 @@ int llopen(LinkLayer connectionParameters)
                     unsigned char byte;
                     int bytesRead = 0;
 
-                    while (stateR != RCV_STOP && bytesRead < 5 && alarmTriggered == FALSE)
-                    {
-                        int res = readByteSerialPort(&byte); 
-                        if (res <= 0)
-                        {
+                    while (stateR != RCV_STOP && bytesRead < 5 && alarmTriggered == 0) {
+                        int res = readByteSerialPort(&byte);
+                        if (res <= 0) {
                             if (alarmTriggered) {
                                 printf("[WARN] Timeout while waiting for UA frame\n");
-                                alarmTriggered = FALSE;
-                                break;  // Exit the loop to retry
+                                alarmTriggered = 0;  // Reset flag for next cycle
+                                break;  // Exit loop to retry
                             }
                             continue;
                         }
-                        readRetryCount = 0;
+
                         uaFrame[bytesRead++] = byte;
 
-                        switch (stateR)
-                        {
+                        // State machine for receiving UA
+                        switch (stateR) {
                             case START:
                                 if (byte == FLAG) stateR = FLAG_RCV;
                                 break;
 
                             case FLAG_RCV:
-                                if (byte == ADDR_RX_COMMAND) {
-                                    stateR = A_RCV;
-                                } else if (byte != FLAG) {
-                                    stateR = START; 
-                                }
+                                if (byte == ADDR_RX_COMMAND) stateR = A_RCV;
+                                else if (byte != FLAG) stateR = START;
                                 break;
 
                             case A_RCV:
-                                if (byte == CTRL_UA) {
-                                    stateR = C_RCV;
-                                } else if (byte == FLAG) {
-                                    stateR = FLAG_RCV;
-                                } else {
-                                    stateR = START;
-                                }
+                                if (byte == CTRL_UA) stateR = C_RCV;
+                                else if (byte == FLAG) stateR = FLAG_RCV;
+                                else stateR = START;
                                 break;
 
                             case C_RCV:
-                                if (byte == (uaFrame[1] ^ uaFrame[2])) {
-                                    stateR = BCC_OK;
-                                } else if (byte == FLAG) {
-                                    stateR = FLAG_RCV; 
-                                } else {
-                                    stateR = START; 
-                                }
+                                if (byte == (uaFrame[1] ^ uaFrame[2])) stateR = BCC_OK;
+                                else if (byte == FLAG) stateR = FLAG_RCV;
+                                else stateR = START;
                                 break;
 
                             case BCC_OK:
-                                if (byte == FLAG) {
-                                    stateR = RCV_STOP; 
-                                    alarm(0);
-                                } else {
-                                    stateR = START; 
-                                }
+                                if (byte == FLAG) stateR = RCV_STOP;
+                                else stateR = START;
                                 break;
                         }
                     }
 
                     if (stateR == RCV_STOP) {
                         printf("[INFO] UA frame successfully received, connection established\n");
-                        alarm(0);
+                        alarm(0);  // Disable the alarm
                         return 1;
                     } else {
                         retry++;
-                        alarm(0);  // Cancel alarm
+                        if (retry >= MAX_RETRIES) {
+                            printf("[ERROR] Maximum retries exceeded while trying to establish connection\n");
+                            alarm(0);  // Cancel the alarm
+                            return ERR_MAX_RETRIES_EXCEEDED;
+                        }
+                        alarm(0);  // Cancel the current alarm
                         printf("[WARN] Retrying to send SET frame, attempt %d/%d\n", retry, MAX_RETRIES);
                         state = SEND_SET;  // Retry sending SET
                     }
@@ -165,18 +159,26 @@ int llopen(LinkLayer connectionParameters)
                 }
             }
         }
+
         printf("[ERROR] Maximum retries exceeded while trying to establish connection\n");
-        alarm(0);
+        alarm(0);  // Cancel the alarm
         return ERR_MAX_RETRIES_EXCEEDED;
     }
     else if (connectionParameters.role == LlRx)
     {
+        // Setup signal handler for SIGALRM to handle timeout
+        signal(SIGALRM, handle_alarm);
+
         enum StateRCV state = START;
         unsigned char byte;
         unsigned char setFrame[5];
         int readRetryCount = 0; 
 
-        while (state != RCV_STOP)
+        // Start the alarm with the timeout value
+        alarm(connectionParameters.timeout);  // Timeout in seconds
+        alarmTriggered = 0;  // Reset alarm flag
+
+        while (state != RCV_STOP && !alarmTriggered)  // Exit if state is RCV_STOP or timeout occurs
         {
             int res = readByteSerialPort(&byte); 
             if (res <= 0)
@@ -184,13 +186,20 @@ int llopen(LinkLayer connectionParameters)
                 if (++readRetryCount >= READ_RETRIES)
                 {
                     printf("[ERROR] Maximum read retries exceeded while waiting for SET frame\n");
-                    alarmTriggered = FALSE;
+                    alarm(0);  // Stop alarm if retries exceeded
                     return ERR_MAX_RETRIES_EXCEEDED;
                 }
+
+                if (alarmTriggered) {
+                    printf("[ERROR] Timeout while waiting for SET frame\n");
+                    return ERR_READ_TIMEOUT;
+                }
+
                 printf("[WARN] Retrying read (%d/%d)\n", readRetryCount, READ_RETRIES);
                 continue;
             }
-            readRetryCount = 0;
+            
+            readRetryCount = 0;  // Reset retry counter after successful read
 
             switch (state)
             {
@@ -222,27 +231,36 @@ int llopen(LinkLayer connectionParameters)
                     break;
 
                 case BCC_OK:
-                    if (byte == FLAG) state = RCV_STOP;  
+                    if (byte == FLAG) state = RCV_STOP;  // Successfully received SET frame
                     else state = START; 
                     break;
             }
+
+            if (alarmTriggered) {
+                printf("[ERROR] Timeout reached while waiting for SET frame\n");
+                return ERR_READ_TIMEOUT;
+            }
         }
 
-        // After successfully receiving the SET frame, send UA frame
+        alarm(0);  // Cancel the alarm
+
+        // Send UA frame in response to the SET frame
         unsigned char uaFrame[5] = {FLAG, ADDR_RX_COMMAND, CTRL_UA, 0x00, FLAG};
         uaFrame[3] = BCC1(uaFrame[1], uaFrame[2]);  // Calculate BCC1
+
         if (writeBytesSerialPort(uaFrame, sizeof(uaFrame)) < 0)
         {
             printf("[ERROR] Failed to send UA frame\n");
             return ERR_WRITE_FAILED;
         }
+
         printf("[INFO] UA frame sent successfully\n");
-        alarm(0);
         printf("[INFO] SUCCESS!\n");
     }
     
     return 1;
 }
+
 
 ////////////////////////////////////////////////
 // LLWRITE
