@@ -271,7 +271,6 @@ int llwrite(const unsigned char *buf, int bufSize)
     int frameSize = bufSize + overhead;
 
     unsigned char frame[frameSize];
-    int frameIndex = 0;
     int index = 0;
     static int Ns = 0;
     unsigned char bcc2 = 0;
@@ -308,8 +307,10 @@ int llwrite(const unsigned char *buf, int bufSize)
         return ERR_WRITE_FAILED; 
     }
 
+    Ns = (Ns + 1) % 2;
+
     return bufSize;
-    
+
 }
 
 ////////////////////////////////////////////////
