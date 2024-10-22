@@ -1,3 +1,5 @@
+version: '3'
+
 services:
   cable:
     build:
@@ -6,24 +8,33 @@ services:
     command: socat -d -d pty,raw,echo=0 pty,raw,echo=0
     tty: true
     volumes:
-      - /dev/pts:/dev/pts  # Share the PTS directory with other containers
+      - /dev/pts:/dev/pts
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "test", "-e", "/dev/pts/0"]  # Replace with correct pty device check
+      interval: 1s
+      retries: 5
 
   tx:
     build:
       context: .
     depends_on:
       - cable
-    command: ./bin/main /dev/pts/1 9600 tx penguin.gif
+    command: /bin/bash -c 'while [ ! -e /dev/pts/1 ]; do sleep 0.2; done; ./bin/main /dev/pts/1 9600 tx penguin.gif'
     container_name: transmitter
     volumes:
-      - /dev/pts:/dev/pts  # Access the shared PTS directory
+      - /dev/pts:/dev/pts
 
   rx:
     build:
       context: .
     depends_on:
       - cable
-    command: ./bin/main /dev/pts/2 9600 rx penguin-received.gif
+    command: /bin/bash -c 'while [ ! -e /dev/pts/2 ]; do sleep 0.2; done; ./bin/main /dev/pts/2 9600 rx penguin-received.gif'
     container_name: receiver
     volumes:
-      - /dev/pts:/dev/pts  # Access the shared PTS directory
+      - /dev/pts:/dev/pts
+

@@ -1,93 +1,83 @@
-#include "application_layer.h"
 #include "link_layer.h"
 #include <stdio.h>
 #include <string.h>
 
-// Application layer function
-void applicationLayer(const char *serialPort, const char *role, int baudRate,
-                      int nTries, int timeout, const char *filename)
+void applicationLayer(const char *serialPort, const char *role, int baudRate, int nTries, int timeout, const char *filename)
 {
-    // Setup link layer connection parameters
     LinkLayer connectionParams;
-    
-    // Copy the serial port string safely
+
     strncpy(connectionParams.serialPort, serialPort, sizeof(connectionParams.serialPort) - 1);
-    connectionParams.serialPort[sizeof(connectionParams.serialPort) - 1] = '\0';  // Ensure null termination
+    connectionParams.serialPort[sizeof(connectionParams.serialPort) - 1] = '\0';  
     
+
     connectionParams.baudRate = baudRate;
     connectionParams.nRetransmissions = nTries;
     connectionParams.timeout = timeout;
 
-    // Open the file to transmit or receive
-    FILE *file = NULL;
-
     if (strcmp(role, "tx") == 0) {
-        connectionParams.role = LlTx;  // Set as transmitter
-        printf("[INFO] Starting as Transmitter\n");
-
-        // Open file to read data for transmission
-        file = fopen(filename, "rb");
-        if (file == NULL) {
-            printf("[ERROR] Could not open file %s for reading\n", filename);
-            return;
-        }
+        connectionParams.role = LlTx; 
+        printf("[INFO] Starting as Transmitter on %s\n", connectionParams.serialPort);
     } else if (strcmp(role, "rx") == 0) {
-        connectionParams.role = LlRx;  // Set as receiver
-        printf("[INFO] Starting as Receiver\n");
-
-        // Open file to write received data
-        file = fopen(filename, "wb");
-        if (file == NULL) {
-            printf("[ERROR] Could not open file %s for writing\n", filename);
-            return;
-        }
+        connectionParams.role = LlRx;  
+        printf("[INFO] Starting as Receiver on %s\n", connectionParams.serialPort);
     } else {
-        printf("[ERROR] Invalid role specified. Must be 'tx' or 'rx'\n");
+        printf("[ERROR] Invalid role specified. Must be 'tx' or 'rx'.\n");
         return;
     }
 
-    // Establish connection using llopen
     if (llopen(connectionParams) < 0) {
-        printf("[ERROR] Failed to establish link layer connection\n");
+        printf("[ERROR] Failed to establish link layer connection.\n");
         return;
     }
 
-    // Transmit or receive data
     if (connectionParams.role == LlTx) {
+        printf("[INFO] Transmitter waiting for 1 second before sending data...\n");
+        sleep(1);  
+        
         printf("[INFO] Transmitting data...\n");
-        unsigned char buffer[256];
-        int bytesRead;
+        const char testMessage[] = "O EDU E GAY 123456!";
+        int bytesWritten = llwrite((unsigned char *)testMessage, strlen(testMessage)-1);
 
-        // Read from file and send over link layer
-        while ((bytesRead = fread(buffer, 1, sizeof(buffer), file)) > 0) {
-            if (llwrite(buffer, bytesRead) < 0) {
-                printf("[ERROR] Failed to transmit data\n");
-                break;
-            }
+        if (bytesWritten == strlen(testMessage)) {
+            printf("[INFO] Successfully transmitted %d bytes.\n", bytesWritten);
+        } else {
+            printf("[ERROR] Failed to transmit the full message. Sent %d bytes.\n", bytesWritten);
         }
+    }
 
-        printf("[INFO] Transmission complete\n");
-    } else if (connectionParams.role == LlRx) {
+    if (connectionParams.role == LlRx) {
         printf("[INFO] Receiving data...\n");
-        unsigned char buffer[256];
-        int bytesReceived;
 
-        // Receive data from the link layer and write to file
-        while ((bytesReceived = llread(buffer)) > 0) {
-            if (fwrite(buffer, 1, bytesReceived, file) < bytesReceived) {
-                printf("[ERROR] Failed to write received data to file\n");
-                break;
+        unsigned char buffer[256];
+        int bytesReceived = 0;
+        int retries = 0;
+        const int maxRetries = 10;  
+
+        while (retries < maxRetries) {
+            bytesReceived = llread(buffer);
+            
+            if (bytesReceived > 0) {
+                printf("[INFO] Received %d bytes: %.*s\n", bytesReceived, bytesReceived, buffer);
+                break;  
+            } else if (bytesReceived == 0) {
+                retries++;
+                printf("[INFO] No data received, retrying (%d/%d)...\n", retries, maxRetries);
+                sleep(1); 
+            } else {
+                printf("[ERROR] Error while receiving data. Retrying...\n");
+                retries++;
+                sleep(1);
             }
         }
 
-        printf("[INFO] Reception complete\n");
+        if (retries == maxRetries) {
+            printf("[ERROR] No data received after %d retries. Giving up.\n", retries);
+        } else {
+            printf("[INFO] Reception complete.\n");
+        }
     }
 
-    // Close the link layer
     if (llclose(1) < 0) {
-        printf("[ERROR] Failed to close the link layer connection\n");
+        printf("[ERROR] Failed to close the link layer connection.\n");
     }
-
-    // Close the file
-    fclose(file);
 }
