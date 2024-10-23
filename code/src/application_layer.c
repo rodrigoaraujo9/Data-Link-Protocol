@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 // Constants for packet types
 #define PACKET_START 0x02
@@ -33,16 +35,25 @@ unsigned char* readFile(const char* filename, int* fileSize) {
     return fileData;
 }
 
-// Function to write the received data into a file
 int writeFile(const char* filename, unsigned char* fileData, int fileSize) {
+    // Open the file in binary write mode (wb) to overwrite any existing file
     FILE* file = fopen(filename, "wb");
     if (!file) {
         printf("[ERROR] Failed to open file for writing: %s\n", filename);
         return -1;
     }
 
-    fwrite(fileData, 1, fileSize, file);
+    // Write the data to the file
+    size_t written = fwrite(fileData, 1, fileSize, file);
+    if (written != fileSize) {
+        printf("[ERROR] Failed to write the full file to disk. Written: %zu, Expected: %d\n", written, fileSize);
+        fclose(file);
+        return -1;
+    }
+
+    // Close the file to ensure data is flushed
     fclose(file);
+    printf("[INFO] File successfully written to: %s\n", filename);
     return 0;
 }
 
@@ -71,38 +82,36 @@ unsigned char* createControlPacket(int type, int fileSize, const char* filename,
     return packet;
 }
 
-// Function to send the file in packets
+
 void sendFile(const char* filename) {
     int fileSize = 0;
     unsigned char* fileData = readFile(filename, &fileSize);
     if (!fileData) {
-        return;  // Error in reading the file
+        return; 
     }
 
-    // Create and send the start control packet
     int packetSize;
     unsigned char* startPacket = createControlPacket(PACKET_START, fileSize, filename, &packetSize);
     llwrite(startPacket, packetSize);
     free(startPacket);
 
-    // Send the file data in packets
     int bytesSent = 0;
-    unsigned char dataPacket[MAX_DATA_SIZE + 4];  // 1 byte for type, 2 for sequence number, 1 for size
+    unsigned char dataPacket[MAX_DATA_SIZE + 4];
     int seq = 0;
     while (bytesSent < fileSize) {
         int dataSize = (fileSize - bytesSent > MAX_DATA_SIZE) ? MAX_DATA_SIZE : fileSize - bytesSent;
         dataPacket[0] = PACKET_DATA;
         dataPacket[1] = seq % 256;
-        dataPacket[2] = (dataSize >> 8) & 0xFF;  // Size MSB
-        dataPacket[3] = dataSize & 0xFF;  // Size LSB
+        dataPacket[2] = (dataSize >> 8) & 0xFF; 
+        dataPacket[3] = dataSize & 0xFF; 
         memcpy(&dataPacket[4], &fileData[bytesSent], dataSize);
 
-        llwrite(dataPacket, dataSize + 4);  // Send the data packet
+        llwrite(dataPacket, dataSize + 4);
         bytesSent += dataSize;
         seq++;
     }
 
-    // Create and send the end control packet
+
     unsigned char* endPacket = createControlPacket(PACKET_END, fileSize, filename, &packetSize);
     llwrite(endPacket, packetSize);
     free(endPacket);
@@ -111,15 +120,19 @@ void sendFile(const char* filename) {
     printf("[INFO] File transmission completed: %s\n", filename);
 }
 
-// Function to receive and reassemble the file from packets
 void receiveFile(const char* filename) {
     unsigned char buffer[512];
     int fileSize = 0;
     unsigned char* fileData = NULL;
     int bytesReceived = 0;
+    int expectedSeq = 0;  // Variable to track expected sequence number
+
+    // Set the full file path inside the container. You can customize this.
+    const char* fullFilePath = filename;
 
     int receiving = 1;
     while (receiving) {
+        printf("[DEBUG] Starting llread\n");
         int packetSize = llread(buffer);
         if (packetSize < 0) {
             printf("[ERROR] Failed to read packet\n");
@@ -128,24 +141,65 @@ void receiveFile(const char* filename) {
 
         unsigned char packetType = buffer[0];
         if (packetType == PACKET_START) {
+            // Extract the file size from the start packet
             fileSize = (buffer[3] << 24) | (buffer[4] << 16) | (buffer[5] << 8) | buffer[6];
             fileData = (unsigned char*)malloc(fileSize);
             if (!fileData) {
                 printf("[ERROR] Memory allocation failed for file reassembly\n");
                 return;
             }
-            printf("[INFO] Start packet received. File size: %d\n", fileSize);
+            printf("[INFO] Start packet received. Expected file size: %d\n", fileSize);
         } else if (packetType == PACKET_DATA) {
+            // Extract sequence number and data size
             int seq = buffer[1];
             int dataSize = (buffer[2] << 8) | buffer[3];
+
+            // Validate packet sequence number
+            if (seq != expectedSeq) {
+                printf("[ERROR] Unexpected sequence number. Expected: %d, Received: %d\n", expectedSeq, seq);
+                free(fileData);
+                return;
+            }
+
+            // Ensure received data does not exceed allocated buffer size
+            if (bytesReceived + dataSize > fileSize) {
+                printf("[ERROR] Data packet size exceeds expected file size. Aborting.\n");
+                free(fileData);
+                return;
+            }
+
+            // Copy the data into the correct position in fileData
             memcpy(&fileData[bytesReceived], &buffer[4], dataSize);
             bytesReceived += dataSize;
-            printf("[INFO] Data packet received. Sequence: %d, Size: %d\n", seq, dataSize);
+            printf("[INFO] Data packet received. Sequence: %d, Size: %d, Total bytes received: %d\n", seq, dataSize, bytesReceived);
+
+            // Update expected sequence number
+            expectedSeq = (expectedSeq + 1) % 256;  // Assuming sequence number wraps at 256
         } else if (packetType == PACKET_END) {
             printf("[INFO] End packet received. Total bytes received: %d\n", bytesReceived);
-            if (writeFile(filename, fileData, bytesReceived) == 0) {
-                printf("[INFO] File reassembled successfully: %s\n", filename);
+
+            // Check if the number of bytes received matches the expected file size
+            if (bytesReceived != fileSize) {
+                printf("[ERROR] Bytes received (%d) do not match expected file size (%d)\n", bytesReceived, fileSize);
+                free(fileData);
+                return;
             }
+
+            // Create directory for output if not exists
+            struct stat st = {0};
+            if (stat("/output", &st) == -1) {
+                mkdir("/output", 0700);  // Create directory inside Docker
+            }
+
+            // Write the reassembled file to disk
+            char finalPath[256];
+            snprintf(finalPath, sizeof(finalPath), "/output/%s", filename);  // Writing file in /output directory
+            if (writeFile(finalPath, fileData, bytesReceived) == 0) {
+                printf("[INFO] File reassembled and saved successfully: %s\n", finalPath);
+            } else {
+                printf("[ERROR] Failed to write file: %s\n", finalPath);
+            }
+
             receiving = 0;  // Stop receiving
         }
     }
@@ -153,7 +207,9 @@ void receiveFile(const char* filename) {
     free(fileData);
 }
 
-// Main application logic
+
+
+
 void applicationLayer(const char *serialPort, const char *role, int baudRate, int nTries, int timeout, const char *filename) {
     LinkLayer connectionParams;
 

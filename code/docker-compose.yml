@@ -5,16 +5,16 @@ services:
     build:
       context: .
     container_name: virtual-cable
-    command: socat -d -d pty,raw,echo=0 pty,raw,echo=0
+    command: socat -d -d pty,raw,echo=0 pty,raw,echo=0  # Creates the virtual serial ports
     tty: true
     volumes:
-      - /dev/pts:/dev/pts
+      - /dev/pts:/dev/pts  # Ensures serial ports are shared with other services
     logging:
       options:
         max-size: "10m"
         max-file: "3"
     healthcheck:
-      test: ["CMD", "test", "-e", "/dev/pts/0"]  # Replace with correct pty device check
+      test: ["CMD", "test", "-e", "/dev/pts/1"]  # Healthcheck for the first virtual port
       interval: 1s
       retries: 5
 
@@ -22,19 +22,24 @@ services:
     build:
       context: .
     depends_on:
-      - cable
-    command: /bin/bash -c 'while [ ! -e /dev/pts/1 ]; do sleep 0.2; done; ./bin/main /dev/pts/1 9600 tx penguin.gif'
+      cable:
+        condition: service_healthy  # Wait until the 'cable' service is healthy
     container_name: transmitter
+    command: /bin/bash -c 'while [ ! -e /dev/pts/1 ]; do sleep 0.2; done; ./bin/main /dev/pts/1 9600 tx penguin.gif'
     volumes:
-      - /dev/pts:/dev/pts
+      - /dev/pts:/dev/pts  # Share the /dev/pts with the host for serial communication
+      - ./output:/output  # Mount an output directory for accessing files
+    tty: true
 
   rx:
     build:
       context: .
     depends_on:
-      - cable
-    command: /bin/bash -c 'while [ ! -e /dev/pts/2 ]; do sleep 0.2; done; ./bin/main /dev/pts/2 9600 rx penguin-received.gif'
+      cable:
+        condition: service_healthy  # Wait until the 'cable' service is healthy
     container_name: receiver
+    command: /bin/bash -c 'while [ ! -e /dev/pts/2 ]; do sleep 0.2; done; ./bin/main /dev/pts/2 9600 rx penguin-received.gif'
     volumes:
-      - /dev/pts:/dev/pts
-
+      - /dev/pts:/dev/pts  # Share the /dev/pts with the host for serial communication
+      - ./output:/output  # Mount an output directory for accessing files
+    tty: true
