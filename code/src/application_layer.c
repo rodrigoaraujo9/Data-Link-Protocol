@@ -1,80 +1,190 @@
 #include "link_layer.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
-void applicationLayer(const char *serialPort, const char *role, int baudRate, int nTries, int timeout, const char *filename)
-{
+// Constants for packet types
+#define PACKET_START 0x02
+#define PACKET_END 0x03
+#define PACKET_DATA 0x01
+#define MAX_DATA_SIZE 256
+
+// Function to read the file into memory
+unsigned char* readFile(const char* filename, int* fileSize) {
+    FILE* file = fopen(filename, "rb");
+    if (!file) {
+        printf("[ERROR] Failed to open file: %s\n", filename);
+        return NULL;
+    }
+
+    fseek(file, 0, SEEK_END);
+    *fileSize = ftell(file);  // Get the file size
+    fseek(file, 0, SEEK_SET);
+
+    unsigned char* fileData = (unsigned char*)malloc(*fileSize);
+    if (!fileData) {
+        printf("[ERROR] Memory allocation failed for file data\n");
+        fclose(file);
+        return NULL;
+    }
+
+    fread(fileData, 1, *fileSize, file);
+    fclose(file);
+    return fileData;
+}
+
+// Function to write the received data into a file
+int writeFile(const char* filename, unsigned char* fileData, int fileSize) {
+    FILE* file = fopen(filename, "wb");
+    if (!file) {
+        printf("[ERROR] Failed to open file for writing: %s\n", filename);
+        return -1;
+    }
+
+    fwrite(fileData, 1, fileSize, file);
+    fclose(file);
+    return 0;
+}
+
+// Function to create a control packet (start/end)
+unsigned char* createControlPacket(int type, int fileSize, const char* filename, int* packetSize) {
+    int filenameLength = strlen(filename);
+    *packetSize = 2 + 4 + 2 + filenameLength;
+
+    unsigned char* packet = (unsigned char*)malloc(*packetSize);
+    if (!packet) {
+        printf("[ERROR] Memory allocation failed for control packet\n");
+        return NULL;
+    }
+
+    packet[0] = type;  // Packet type (start/end)
+    packet[1] = 0x00;  // T1 (file size identifier)
+    packet[2] = 0x04;  // L1 (length of file size field)
+    packet[3] = (fileSize >> 24) & 0xFF;
+    packet[4] = (fileSize >> 16) & 0xFF;
+    packet[5] = (fileSize >> 8) & 0xFF;
+    packet[6] = fileSize & 0xFF;
+    packet[7] = 0x01;  // T2 (filename identifier)
+    packet[8] = filenameLength;  // L2 (length of filename)
+    memcpy(&packet[9], filename, filenameLength);  // Filename
+
+    return packet;
+}
+
+// Function to send the file in packets
+void sendFile(const char* filename) {
+    int fileSize = 0;
+    unsigned char* fileData = readFile(filename, &fileSize);
+    if (!fileData) {
+        return;  // Error in reading the file
+    }
+
+    // Create and send the start control packet
+    int packetSize;
+    unsigned char* startPacket = createControlPacket(PACKET_START, fileSize, filename, &packetSize);
+    llwrite(startPacket, packetSize);
+    free(startPacket);
+
+    // Send the file data in packets
+    int bytesSent = 0;
+    unsigned char dataPacket[MAX_DATA_SIZE + 4];  // 1 byte for type, 2 for sequence number, 1 for size
+    int seq = 0;
+    while (bytesSent < fileSize) {
+        int dataSize = (fileSize - bytesSent > MAX_DATA_SIZE) ? MAX_DATA_SIZE : fileSize - bytesSent;
+        dataPacket[0] = PACKET_DATA;
+        dataPacket[1] = seq % 256;
+        dataPacket[2] = (dataSize >> 8) & 0xFF;  // Size MSB
+        dataPacket[3] = dataSize & 0xFF;  // Size LSB
+        memcpy(&dataPacket[4], &fileData[bytesSent], dataSize);
+
+        llwrite(dataPacket, dataSize + 4);  // Send the data packet
+        bytesSent += dataSize;
+        seq++;
+    }
+
+    // Create and send the end control packet
+    unsigned char* endPacket = createControlPacket(PACKET_END, fileSize, filename, &packetSize);
+    llwrite(endPacket, packetSize);
+    free(endPacket);
+    free(fileData);
+
+    printf("[INFO] File transmission completed: %s\n", filename);
+}
+
+// Function to receive and reassemble the file from packets
+void receiveFile(const char* filename) {
+    unsigned char buffer[512];
+    int fileSize = 0;
+    unsigned char* fileData = NULL;
+    int bytesReceived = 0;
+
+    int receiving = 1;
+    while (receiving) {
+        int packetSize = llread(buffer);
+        if (packetSize < 0) {
+            printf("[ERROR] Failed to read packet\n");
+            continue;
+        }
+
+        unsigned char packetType = buffer[0];
+        if (packetType == PACKET_START) {
+            fileSize = (buffer[3] << 24) | (buffer[4] << 16) | (buffer[5] << 8) | buffer[6];
+            fileData = (unsigned char*)malloc(fileSize);
+            if (!fileData) {
+                printf("[ERROR] Memory allocation failed for file reassembly\n");
+                return;
+            }
+            printf("[INFO] Start packet received. File size: %d\n", fileSize);
+        } else if (packetType == PACKET_DATA) {
+            int seq = buffer[1];
+            int dataSize = (buffer[2] << 8) | buffer[3];
+            memcpy(&fileData[bytesReceived], &buffer[4], dataSize);
+            bytesReceived += dataSize;
+            printf("[INFO] Data packet received. Sequence: %d, Size: %d\n", seq, dataSize);
+        } else if (packetType == PACKET_END) {
+            printf("[INFO] End packet received. Total bytes received: %d\n", bytesReceived);
+            if (writeFile(filename, fileData, bytesReceived) == 0) {
+                printf("[INFO] File reassembled successfully: %s\n", filename);
+            }
+            receiving = 0;  // Stop receiving
+        }
+    }
+
+    free(fileData);
+}
+
+// Main application logic
+void applicationLayer(const char *serialPort, const char *role, int baudRate, int nTries, int timeout, const char *filename) {
     LinkLayer connectionParams;
 
     strncpy(connectionParams.serialPort, serialPort, sizeof(connectionParams.serialPort) - 1);
-    connectionParams.serialPort[sizeof(connectionParams.serialPort) - 1] = '\0';  
-    
+    connectionParams.serialPort[sizeof(connectionParams.serialPort) - 1] = '\0';
 
     connectionParams.baudRate = baudRate;
     connectionParams.nRetransmissions = nTries;
     connectionParams.timeout = timeout;
 
     if (strcmp(role, "tx") == 0) {
-        connectionParams.role = LlTx; 
+        connectionParams.role = LlTx;
         printf("[INFO] Starting as Transmitter on %s\n", connectionParams.serialPort);
+        if (llopen(connectionParams) < 0) {
+            printf("[ERROR] Failed to establish link layer connection.\n");
+            return;
+        }
+
+        sendFile(filename);
     } else if (strcmp(role, "rx") == 0) {
-        connectionParams.role = LlRx;  
+        connectionParams.role = LlRx;
         printf("[INFO] Starting as Receiver on %s\n", connectionParams.serialPort);
+        if (llopen(connectionParams) < 0) {
+            printf("[ERROR] Failed to establish link layer connection.\n");
+            return;
+        }
+
+        receiveFile("received.gif");  // You can use another name for the received file
     } else {
         printf("[ERROR] Invalid role specified. Must be 'tx' or 'rx'.\n");
         return;
-    }
-
-    if (llopen(connectionParams) < 0) {
-        printf("[ERROR] Failed to establish link layer connection.\n");
-        return;
-    }
-
-    if (connectionParams.role == LlTx) {
-        printf("[INFO] Transmitter waiting for 1 second before sending data...\n");
-        sleep(1);  
-        
-        printf("[INFO] Transmitting data...\n");
-        const char testMessage[] = "O EDU E GAY 123456!";
-        int bytesWritten = llwrite((unsigned char *)testMessage, strlen(testMessage)-1);
-
-        if (bytesWritten == strlen(testMessage)) {
-            printf("[INFO] Successfully transmitted %d bytes.\n", bytesWritten);
-        } else {
-            printf("[ERROR] Failed to transmit the full message. Sent %d bytes.\n", bytesWritten);
-        }
-    }
-
-    if (connectionParams.role == LlRx) {
-        printf("[INFO] Receiving data...\n");
-
-        unsigned char buffer[256];
-        int bytesReceived = 0;
-        int retries = 0;
-        const int maxRetries = 10;  
-
-        while (retries < maxRetries) {
-            bytesReceived = llread(buffer);
-            
-            if (bytesReceived > 0) {
-                printf("[INFO] Received %d bytes: %.*s\n", bytesReceived, bytesReceived, buffer);
-                break;  
-            } else if (bytesReceived == 0) {
-                retries++;
-                printf("[INFO] No data received, retrying (%d/%d)...\n", retries, maxRetries);
-                sleep(1); 
-            } else {
-                printf("[ERROR] Error while receiving data. Retrying...\n");
-                retries++;
-                sleep(1);
-            }
-        }
-
-        if (retries == maxRetries) {
-            printf("[ERROR] No data received after %d retries. Giving up.\n", retries);
-        } else {
-            printf("[INFO] Reception complete.\n");
-        }
     }
 
     if (llclose(1) < 0) {
