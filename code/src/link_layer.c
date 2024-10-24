@@ -230,8 +230,8 @@ int llopen(LinkLayer connectionParameters) {
 }
 
 int llwrite(const unsigned char *buf, int bufSize) {
-    int overhead = 6;  // FLAG, A, C, BCC1, BCC2, FLAG
-    int maxFrameSize = bufSize * 2 + overhead;  // Max frame size considering byte stuffing
+    int overhead = 6;
+    int maxFrameSize = bufSize * 2 + overhead;
     unsigned char *frame = (unsigned char*)malloc(maxFrameSize);
 
     if (frame == NULL) {
@@ -240,46 +240,42 @@ int llwrite(const unsigned char *buf, int bufSize) {
     }
 
     int index = 0;
-    static int Ns = 0;  // Sequence number for I-frames
+    static int Ns = 0;
     unsigned char bcc2 = 0;
 
-    frame[index++] = FLAG;  // Starting flag
-    frame[index++] = ADDR_TX_COMMAND;  // Address field
-    frame[index++] = (Ns == 0) ? 0x00 : 0x80;  // Control field
-    frame[index++] = BCC1(frame[1], frame[2]);  // BCC1 (Address XOR Control)
+    frame[index++] = FLAG;
+    frame[index++] = ADDR_TX_COMMAND;
+    frame[index++] = (Ns == 0) ? 0x00 : 0x80;
+    frame[index++] = BCC1(frame[1], frame[2]);
 
-    // Apply byte stuffing and calculate BCC2
     for (int i = 0; i < bufSize; i++) {
-        bcc2 ^= buf[i];  // Compute BCC2 over the original (un-stuffed) data
+        bcc2 ^= buf[i];
 
-        // Perform byte-stuffing for FLAG (0x7E) and ESC (0x7D)
         if (buf[i] == FLAG) {
-            frame[index++] = 0x7D;  // Escape byte
-            frame[index++] = 0x5E;  // FLAG XOR'd with 0x20
+            frame[index++] = 0x7D;
+            frame[index++] = 0x5E;
         } else if (buf[i] == 0x7D) {
-            frame[index++] = 0x7D;  // Escape byte
-            frame[index++] = 0x5D;  // ESC XOR'd with 0x20
+            frame[index++] = 0x7D;
+            frame[index++] = 0x5D;
         } else {
-            frame[index++] = buf[i];  // Normal byte
+            frame[index++] = buf[i];
         }
     }
 
-    // Append BCC2 and perform byte-stuffing if necessary
     if (bcc2 == FLAG) {
-        frame[index++] = 0x7D;  // Escape byte
-        frame[index++] = 0x5E;  // Escape FLAG
+        frame[index++] = 0x7D;
+        frame[index++] = 0x5E;
     } else if (bcc2 == 0x7D) {
-        frame[index++] = 0x7D;  // Escape byte
-        frame[index++] = 0x5D;  // Escape ESC
+        frame[index++] = 0x7D;
+        frame[index++] = 0x5D;
     } else {
-        frame[index++] = bcc2;  // Normal BCC2
+        frame[index++] = bcc2;
     }
 
-    frame[index++] = FLAG;  // Closing flag
+    frame[index++] = FLAG;
 
     printf("[DEBUG] Prepared frame size: %d bytes (Including overhead)\n", index);
 
-    // Send frame over serial port
     int result = writeBytesSerialPort(frame, index);
     if (result < 0 || result != index) {
         printf("[ERROR] Failed to write full frame to serial port. Expected: %d, Sent: %d\n", index, result);
@@ -290,7 +286,7 @@ int llwrite(const unsigned char *buf, int bufSize) {
     free(frame);
     printf("[DEBUG] Sent full frame successfully, frame size: %d bytes\n", index);
 
-    Ns = (Ns + 1) % 2;  // Increment sequence number for the next frame
+    Ns = (Ns + 1) % 2;
     return bufSize;
 }
 
@@ -298,13 +294,13 @@ int llwrite(const unsigned char *buf, int bufSize) {
 int llread(unsigned char *packet) {
     enum StateRCV state = START;
     unsigned char byte;
-    unsigned char frame[256];  // Buffer for the received frame
+    unsigned char frame[256];
     int frameIndex = 0;
-    unsigned char bcc2 = 0;    // For BCC2 calculation
+    unsigned char bcc2 = 0;
     int bytesRead = 0;
     int retries = 0;
-    const int maxRetries = 20;  // Increased retry limit
-    const int readTimeout = 5;  // Adjust timeout (in seconds)
+    const int maxRetries = 20;
+    const int readTimeout = 5;
 
     printf("[DEBUG] Starting llread\n");
 
@@ -314,11 +310,11 @@ int llread(unsigned char *packet) {
         if (res <= 0) {
             printf("[ERROR] Read timeout (retry %d of %d)\n", retries + 1, maxRetries);
             retries++;
-            sleep(readTimeout);  // Give time before retrying
-            continue;  // Retry reading if we timeout
+            sleep(readTimeout);
+            continue;
         }
 
-        retries = 0;  // Reset retries on successful byte read
+        retries = 0;
 
         switch (state) {
             case START:
@@ -326,7 +322,7 @@ int llread(unsigned char *packet) {
                     state = FLAG_RCV;
                     frameIndex = 0;
                     bytesRead = 0;
-                    bcc2 = 0;  // Reset BCC2 for new frame
+                    bcc2 = 0;
                 }
                 break;
 
@@ -363,26 +359,24 @@ int llread(unsigned char *packet) {
 
             case BCC_OK:
                 if (byte == FLAG) {
-                    if (bcc2 == 0) {  // Valid BCC2
+                    if (bcc2 == 0) {
                         state = RCV_STOP;
-                        sendRR();  // Send RR (positive acknowledgment)
+                        sendRR();
                         printf("[INFO] Frame successfully received\n");
                     } else {
-                        sendREJ();  // Send REJ (negative acknowledgment)
+                        sendREJ();
                         printf("[ERROR] BCC2 mismatch, frame rejected\n");
                     }
                 } else {
-                    // Destuffing and calculate BCC2
                     if (byte == 0x7D) {
-                        // Escape byte detected, read the next byte
                         int res = readByteSerialPort(&byte);
                         if (res > 0) {
-                            if (byte == 0x5E) byte = 0x7E;  // Original FLAG byte
-                            if (byte == 0x5D) byte = 0x7D;  // Original ESC byte
+                            if (byte == 0x5E) byte = 0x7E;
+                            if (byte == 0x5D) byte = 0x7D;
                         }
                     }
                     packet[bytesRead++] = byte;
-                    bcc2 ^= byte;  // Update BCC2 with the destuffed byte
+                    bcc2 ^= byte;
                 }
                 break;
         }
