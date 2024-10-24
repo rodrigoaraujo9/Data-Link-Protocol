@@ -4,10 +4,11 @@
 // Author: Manuel Ricardo [mricardo@fe.up.pt]
 // Modified by: Eduardo Nuno Almeida [enalmeida@fe.up.pt]
 // Modified by: Rui Prior [rcprior@fc.up.pt]
-
+#define _GNU_SOURCE
+#include <sched.h>
 #include <fcntl.h>
 #include <math.h>
-#include <sched.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -134,10 +135,14 @@ void set_baud_rate(unsigned long baud)
 
 // Make the program use RT priority to improve precision in timing
 void set_rt_priority(void) {
+#ifdef __linux__
     struct sched_param sp = { .sched_priority = 50 };
     if (sched_setscheduler(0, SCHED_FIFO, &sp) == -1) {
-      perror("Could not set realtime priority");
+        perror("Could not set realtime priority");
     }
+#else
+    printf("Real-time scheduling is not supported on this platform.\n");
+#endif
 }
 
 
