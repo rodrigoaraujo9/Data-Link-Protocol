@@ -17,7 +17,6 @@
 #define CTRL_DISC 0x0B
 #define BCC1(addr, ctrl) ((addr) ^ (ctrl))
 #define MAX_RETRIES 10
-#define MAX_RETRIES_TEST 3
 #define TIMEOUT_SECONDS 5
 #define READ_RETRIES 5
 #define ERR_MAX_RETRIES_EXCEEDED -2
@@ -420,19 +419,18 @@ void sendDISC() {
 
 
 int llclose(LinkLayer connectionParameters, int showStatistics) {
+    
     if (connectionParameters.role == LlTx) {
         int retries = 0;
 
-        // Enviar o quadro DISC
         while (retries < MAX_RETRIES) {
-            sendDISC(); // Enviar o quadro DISC
+            sendDISC(); 
             printf("[INFO] DISC packet from transmitter sent.\n");
-
             printf("[INFO] Waiting for DISC from receiver...\n");
 
             unsigned char byte;
             enum StateRCV state = START;
-            alarm(1); // Configurar temporizador para 1 segundo
+            alarm(1); 
 
             while (state != RCV_STOP) {
                 int res = readByteSerialPort(&byte);
@@ -446,29 +444,40 @@ int llclose(LinkLayer connectionParameters, int showStatistics) {
                         return ERR_MAX_RETRIES_EXCEEDED;
                     }
                     printf("[WARN] Retrying sending DISC...\n");
-                    break; // Sair do loop interno para tentar enviar DISC novamente
+                    break; 
                 }
 
-                // Processar o byte recebido
+
                 switch (state) {
                     case START:
-                        if (byte == FLAG) state = FLAG_RCV;
+                        if (byte == FLAG) {
+                            state = FLAG_RCV;
+                        }
                         break;
                     case FLAG_RCV:
-                        if (byte == ADDR_RX_COMMAND) state = A_RCV;
-                        else if (byte != FLAG) state = START;
+                        if (byte == ADDR_RX_COMMAND) {
+                            state = A_RCV;
+                        } else if (byte != FLAG) {
+                            state = START;
+                        }
                         break;
                     case A_RCV:
                         if (byte == CTRL_DISC) {
                             state = C_RCV;
-                        } else if (byte == FLAG) state = FLAG_RCV;
-                        else state = START;
+                        } else if (byte == FLAG) {
+                            state = FLAG_RCV;
+                        } else {
+                            state = START;
+                        }
                         break;
                     case C_RCV:
                         if (byte == BCC1(ADDR_RX_COMMAND, CTRL_DISC)) {
                             state = BCC_OK;
-                        } else if (byte == FLAG) state = FLAG_RCV;
-                        else state = START;
+                        } else if (byte == FLAG) {
+                            state = FLAG_RCV;
+                        } else {
+                            state = START;
+                        }
                         break;
                     case BCC_OK:
                         if (byte == FLAG) {
@@ -481,14 +490,12 @@ int llclose(LinkLayer connectionParameters, int showStatistics) {
                 }
             }
 
-            // Se a resposta DISC foi recebida, saia do loop
             if (state == RCV_STOP) {
-                break; // Sucesso, sair do loop de envio de DISC
+                break; 
             }
         }
 
-        // Enviar UA para confirmar o encerramento
-        unsigned char uaFrame[5] = {FLAG, ADDR_TX_COMMAND, CTRL_UA, 0x00, FLAG}; // Declarar uaFrame
+        unsigned char uaFrame[5] = {FLAG, ADDR_TX_COMMAND, CTRL_UA, 0x00, FLAG}; 
         uaFrame[3] = BCC1(uaFrame[1], uaFrame[2]);
 
         if (writeBytesSerialPort(uaFrame, sizeof(uaFrame)) < 0) {
@@ -501,7 +508,6 @@ int llclose(LinkLayer connectionParameters, int showStatistics) {
         unsigned char byte;
         enum StateRCV state = START;
 
-        // Esperar por um quadro DISC
         while (state != RCV_STOP) {
             int res = readByteSerialPort(&byte);
             if (res <= 0) {
@@ -509,50 +515,50 @@ int llclose(LinkLayer connectionParameters, int showStatistics) {
                 return ERR_READ_TIMEOUT;
             }
 
-            // Processar o byte recebido
             switch (state) {
                 case START:
-                    if (byte == FLAG) state = FLAG_RCV;
+                    if (byte == FLAG) {
+                        state = FLAG_RCV;
+                    }
                     break;
 
                 case FLAG_RCV:
                     if (byte == ADDR_RX_COMMAND) {
-                        state = A_RCV; // Esperando o endereço do receptor
+                        state = A_RCV; 
                     } else if (byte != FLAG) {
-                        state = START; // Reiniciar se não for FLAG
+                        state = START; 
                     }
                     break;
 
                 case A_RCV:
                     if (byte == CTRL_DISC) {
-                        state = C_RCV; // Recebeu o comando de controle DISC
+                        state = C_RCV; 
                     } else if (byte == FLAG) {
-                        state = FLAG_RCV; // Reiniciar se FLAG
+                        state = FLAG_RCV; 
                         break;
                     } else {
-                        state = START; // Reiniciar em caso de erro
+                        state = START; 
                     }
                     break;
 
                 case C_RCV:
-                    // Verificando a BCC
                     if (byte == BCC1(ADDR_RX_COMMAND, CTRL_DISC)) {
-                        state = BCC_OK; // BCC correto
+                        state = BCC_OK;
                     } else if (byte == FLAG) {
-                        state = FLAG_RCV; // Reiniciar se FLAG
+                        state = FLAG_RCV; 
                     } else {
-                        state = START; // Reiniciar em caso de erro
+                        state = START; 
                     }
                     break;
 
                 case BCC_OK:
                     if (byte == FLAG) {
-                        state = RCV_STOP; // Recebeu o FLAG final
+                        state = RCV_STOP; 
                         printf("[INFO] Received DISC frame from transmitter\n");
-                        sendDISC(); // Enviar a resposta DISC
+                        sendDISC(); 
                         printf("[INFO] DISC packet from receiver sent.\n");
                     } else {
-                        state = START; // Reiniciar em caso de erro
+                        state = START;
                     }
                     break;
             }
