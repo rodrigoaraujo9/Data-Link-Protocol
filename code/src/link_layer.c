@@ -407,11 +407,11 @@ void sendREJ() {
 void sendDISC() {
     unsigned char discFrame[5];
 
-    discFrame[0] = FLAG; // Início do quadro
-    discFrame[1] = ADDR_RX_COMMAND; // Endereço do receptor
-    discFrame[2] = CTRL_DISC; // Código de controle DISC
-    discFrame[3] = BCC1(discFrame[1], discFrame[2]); // Calcular o BCC
-    discFrame[4] = FLAG; // Fim do quadro
+    discFrame[0] = FLAG; 
+    discFrame[1] = ADDR_RX_COMMAND; 
+    discFrame[2] = CTRL_DISC; 
+    discFrame[3] = BCC1(discFrame[1], discFrame[2]);
+    discFrame[4] = FLAG; 
 
     writeBytesSerialPort(discFrame, sizeof(discFrame));
 }
