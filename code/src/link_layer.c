@@ -17,6 +17,7 @@
 #define CTRL_DISC 0x0B
 #define BCC1(addr, ctrl) ((addr) ^ (ctrl))
 #define MAX_RETRIES 10
+#define MAX_RETRIES_TEST 3
 #define TIMEOUT_SECONDS 5
 #define READ_RETRIES 5
 #define ERR_MAX_RETRIES_EXCEEDED -2
@@ -404,10 +405,172 @@ void sendREJ() {
     writeBytesSerialPort(rejFrame, sizeof(rejFrame));
 }
 
+void sendDISC() {
+    unsigned char discFrame[5];
 
+    discFrame[0] = FLAG; // Início do quadro
+    discFrame[1] = ADDR_RX_COMMAND; // Endereço do receptor
+    discFrame[2] = CTRL_DISC; // Código de controle DISC
+    discFrame[3] = BCC1(discFrame[1], discFrame[2]); // Calcular o BCC
+    discFrame[4] = FLAG; // Fim do quadro
 
-int llclose(int showStatistics) {
-    int clstat = closeSerialPort();
-    return clstat;
-
+    writeBytesSerialPort(discFrame, sizeof(discFrame));
 }
+
+
+
+int llclose(LinkLayer connectionParameters, int showStatistics) {
+    if (connectionParameters.role == LlTx) {
+        int retries = 0;
+
+        // Enviar o quadro DISC
+        while (retries < MAX_RETRIES) {
+            sendDISC(); // Enviar o quadro DISC
+            printf("[INFO] DISC packet from transmitter sent.\n");
+
+            printf("[INFO] Waiting for DISC from receiver...\n");
+
+            unsigned char byte;
+            enum StateRCV state = START;
+            alarm(1); // Configurar temporizador para 1 segundo
+
+            while (state != RCV_STOP) {
+                int res = readByteSerialPort(&byte);
+            
+                if (res <= 0) {
+                    sleep(1);
+                    printf("[ERROR] Timeout while waiting for DISC frame\n");
+                    retries++;
+                    if (retries >= MAX_RETRIES) {
+                        printf("[ERROR] Maximum retries exceeded while waiting for DISC frame\n");
+                        return ERR_MAX_RETRIES_EXCEEDED;
+                    }
+                    printf("[WARN] Retrying sending DISC...\n");
+                    break; // Sair do loop interno para tentar enviar DISC novamente
+                }
+
+                // Processar o byte recebido
+                switch (state) {
+                    case START:
+                        if (byte == FLAG) state = FLAG_RCV;
+                        break;
+                    case FLAG_RCV:
+                        if (byte == ADDR_RX_COMMAND) state = A_RCV;
+                        else if (byte != FLAG) state = START;
+                        break;
+                    case A_RCV:
+                        if (byte == CTRL_DISC) {
+                            state = C_RCV;
+                        } else if (byte == FLAG) state = FLAG_RCV;
+                        else state = START;
+                        break;
+                    case C_RCV:
+                        if (byte == BCC1(ADDR_RX_COMMAND, CTRL_DISC)) {
+                            state = BCC_OK;
+                        } else if (byte == FLAG) state = FLAG_RCV;
+                        else state = START;
+                        break;
+                    case BCC_OK:
+                        if (byte == FLAG) {
+                            state = RCV_STOP;
+                            printf("[INFO] Received DISC frame from receiver\n");
+                        } else {
+                            state = START;
+                        }
+                        break;
+                }
+            }
+
+            // Se a resposta DISC foi recebida, saia do loop
+            if (state == RCV_STOP) {
+                break; // Sucesso, sair do loop de envio de DISC
+            }
+        }
+
+        // Enviar UA para confirmar o encerramento
+        unsigned char uaFrame[5] = {FLAG, ADDR_TX_COMMAND, CTRL_UA, 0x00, FLAG}; // Declarar uaFrame
+        uaFrame[3] = BCC1(uaFrame[1], uaFrame[2]);
+
+        if (writeBytesSerialPort(uaFrame, sizeof(uaFrame)) < 0) {
+            printf("[ERROR] Failed to send UA frame\n");
+            return ERR_WRITE_FAILED;
+        }
+        printf("[INFO] Sent UA frame to confirm connection closure\n");
+    } 
+    else if (connectionParameters.role == LlRx) {
+        unsigned char byte;
+        enum StateRCV state = START;
+
+        // Esperar por um quadro DISC
+        while (state != RCV_STOP) {
+            int res = readByteSerialPort(&byte);
+            if (res <= 0) {
+                printf("[ERROR] Timeout while waiting for DISC frame\n");
+                return ERR_READ_TIMEOUT;
+            }
+
+            // Processar o byte recebido
+            switch (state) {
+                case START:
+                    if (byte == FLAG) state = FLAG_RCV;
+                    break;
+
+                case FLAG_RCV:
+                    if (byte == ADDR_RX_COMMAND) {
+                        state = A_RCV; // Esperando o endereço do receptor
+                    } else if (byte != FLAG) {
+                        state = START; // Reiniciar se não for FLAG
+                    }
+                    break;
+
+                case A_RCV:
+                    if (byte == CTRL_DISC) {
+                        state = C_RCV; // Recebeu o comando de controle DISC
+                    } else if (byte == FLAG) {
+                        state = FLAG_RCV; // Reiniciar se FLAG
+                        break;
+                    } else {
+                        state = START; // Reiniciar em caso de erro
+                    }
+                    break;
+
+                case C_RCV:
+                    // Verificando a BCC
+                    if (byte == BCC1(ADDR_RX_COMMAND, CTRL_DISC)) {
+                        state = BCC_OK; // BCC correto
+                    } else if (byte == FLAG) {
+                        state = FLAG_RCV; // Reiniciar se FLAG
+                    } else {
+                        state = START; // Reiniciar em caso de erro
+                    }
+                    break;
+
+                case BCC_OK:
+                    if (byte == FLAG) {
+                        state = RCV_STOP; // Recebeu o FLAG final
+                        printf("[INFO] Received DISC frame from transmitter\n");
+                        sendDISC(); // Enviar a resposta DISC
+                        printf("[INFO] DISC packet from receiver sent.\n");
+                    } else {
+                        state = START; // Reiniciar em caso de erro
+                    }
+                    break;
+            }
+        }
+    }
+
+    // Close serial port
+    int clstat = closeSerialPort();
+    if (clstat != -1) {
+        printf("[INFO] connection closed.\n");
+    }
+
+
+    if (showStatistics) {
+        printf("[INFO] Statistics:\n");
+        // Pôr aqui as estatísticas
+    }
+    return clstat;
+}
+
+
