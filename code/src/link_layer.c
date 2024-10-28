@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <sys/signal.h>
+#include <stdlib.h>
 
 #define _POSIX_SOURCE 1
 #define FLAG 0x7E
@@ -122,6 +123,8 @@ int llopen(LinkLayer connectionParameters) {
                                 if (byte == FLAG) stateR = RCV_STOP;
                                 else stateR = START;
                                 break;
+                            default:
+                                break;
                         }
                     }
 
@@ -132,6 +135,8 @@ int llopen(LinkLayer connectionParameters) {
                     }
                     break;
                 }
+                default:
+                    break;
             }
         }
 
@@ -197,6 +202,8 @@ int llopen(LinkLayer connectionParameters) {
                     if (byte == FLAG) state = RCV_STOP;
                     else state = START;
                     break;
+                default:
+                                break;
             }
 
             if (alarmTriggered && retry >= MAX_RETRIES) {
@@ -290,6 +297,17 @@ int llwrite(const unsigned char *buf, int bufSize) {
     return bufSize;
 }
 
+void sendRR() {
+    unsigned char rrFrame[5] = {FLAG, ADDR_RX_COMMAND, CTRL_RR0, 0x00, FLAG};
+    rrFrame[3] = BCC1(rrFrame[1], rrFrame[2]);
+    writeBytesSerialPort(rrFrame, sizeof(rrFrame));
+}
+
+void sendREJ() {
+    unsigned char rejFrame[5] = {FLAG, ADDR_RX_COMMAND, CTRL_REJ0, 0x00, FLAG};
+    rejFrame[3] = BCC1(rejFrame[1], rejFrame[2]);
+    writeBytesSerialPort(rejFrame, sizeof(rejFrame));
+}
 
 int llread(unsigned char *packet) {
     enum StateRCV state = START;
@@ -379,6 +397,8 @@ int llread(unsigned char *packet) {
                     bcc2 ^= byte;
                 }
                 break;
+            default:
+                                break;
         }
     }
 
@@ -392,17 +412,7 @@ int llread(unsigned char *packet) {
 }
 
 
-void sendRR() {
-    unsigned char rrFrame[5] = {FLAG, ADDR_RX_COMMAND, CTRL_RR0, 0x00, FLAG};
-    rrFrame[3] = BCC1(rrFrame[1], rrFrame[2]);
-    writeBytesSerialPort(rrFrame, sizeof(rrFrame));
-}
 
-void sendREJ() {
-    unsigned char rejFrame[5] = {FLAG, ADDR_RX_COMMAND, CTRL_REJ0, 0x00, FLAG};
-    rejFrame[3] = BCC1(rejFrame[1], rejFrame[2]);
-    writeBytesSerialPort(rejFrame, sizeof(rejFrame));
-}
 
 void sendDISC() {
     unsigned char discFrame[5];
@@ -487,6 +497,8 @@ int llclose(LinkLayer connectionParameters, int showStatistics) {
                             state = START;
                         }
                         break;
+                    default:
+                                break;
                 }
             }
 
@@ -561,6 +573,8 @@ int llclose(LinkLayer connectionParameters, int showStatistics) {
                         state = START;
                     }
                     break;
+                default:
+                                break;
             }
         }
     }

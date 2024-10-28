@@ -119,8 +119,6 @@ void receiveFile(const char* filename) {
     int bytesReceived = 0;
     int expectedSeq = 0;
 
-    const char* fullFilePath = filename;
-
     int receiving = 1;
     while (receiving) {
         printf("[DEBUG] Starting llread\n");
