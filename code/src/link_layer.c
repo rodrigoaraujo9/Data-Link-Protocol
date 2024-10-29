@@ -41,15 +41,18 @@ void handle_alarm(int sig) {
     alarm(1);
 }
 
+LinkLayerRole role;
+
 int llopen(LinkLayer connectionParameters) {
     connectionParameters.timeout = timeout;
+    role = connectionParameters.role;
     signal(SIGALRM, handle_alarm);  
     if (openSerialPort(connectionParameters.serialPort, connectionParameters.baudRate) < 0) {
         printf("[ERROR] Failed to open serial port\n");
         return -1;
     }
 
-    if (connectionParameters.role == LlTx) {
+    if (role == LlTx) {
         unsigned char setFrame[5] = {FLAG, ADDR_TX_COMMAND, CTRL_SET, 0x00, FLAG};
         setFrame[3] = BCC1(setFrame[1], setFrame[2]);
 
@@ -143,7 +146,7 @@ int llopen(LinkLayer connectionParameters) {
         printf("[ERROR] Maximum retries exceeded while trying to establish connection\n");
         alarm(0);
         return ERR_MAX_RETRIES_EXCEEDED;
-    } else if (connectionParameters.role == LlRx) {
+    } else if (role == LlRx) {
         signal(SIGALRM, handle_alarm);
 
         enum StateRCV state = START;
@@ -436,9 +439,9 @@ void sendDISC() {
 
 
 
-int llclose(LinkLayer connectionParameters, int showStatistics) {
+int llclose(int showStatistics) {
     
-    if (connectionParameters.role == LlTx) {
+    if (role == LlTx) {
         int retries = 0;
 
         while (retries < MAX_RETRIES) {
@@ -524,7 +527,7 @@ int llclose(LinkLayer connectionParameters, int showStatistics) {
         }
         printf("[INFO] Sent UA frame to confirm connection closure\n");
     } 
-    else if (connectionParameters.role == LlRx) {
+    else if (role == LlRx) {
         unsigned char byte;
         enum StateRCV state = START;
 
