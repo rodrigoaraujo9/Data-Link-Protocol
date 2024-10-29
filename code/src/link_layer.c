@@ -308,6 +308,14 @@ void sendREJ() {
     rejFrame[3] = BCC1(rejFrame[1], rejFrame[2]);
     writeBytesSerialPort(rejFrame, sizeof(rejFrame));
 }
+void introduceErrors(unsigned char *data, int length, double fer) {
+    for (int i = 0; i < length; i++) {
+        if ((double)rand() / RAND_MAX < fer) {
+            data[i] ^= 0xFF; // Flip all bits in the byte
+        }
+    }
+
+}
 
 int llread(unsigned char *packet) {
     enum StateRCV state = START;
