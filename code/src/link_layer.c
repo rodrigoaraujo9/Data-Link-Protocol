@@ -5,6 +5,8 @@
 #include <sys/signal.h>
 #include <stdlib.h>
 
+#include <time.h>
+
 #define _POSIX_SOURCE 1
 #define FLAG 0x7E
 #define ADDR_TX_COMMAND 0x03
@@ -32,7 +34,6 @@ enum StateRCV {START, FLAG_RCV, A_RCV, C_RCV, BCC_OK, RCV_STOP};
 
 volatile int alarmTriggered = FALSE;
 int alarmCount = 0;
-int timeout = TIMEOUT_SECONDS;
 
 void handle_alarm(int sig) {
     alarmTriggered = 1;
@@ -41,13 +42,29 @@ void handle_alarm(int sig) {
     alarm(1);
 }
 
+int timeout = 0;
+int transmitions = 0;
+int frame_number = 0;
+int errors = 0;
+clock_t start_time;
+int bits_recei = 0;
+int bits_Sent = 0;
+extern int fd;
+LinkLayerRole role;
+char serialPort[50];
+int baudRate;
+
 int llopen(LinkLayer connectionParameters) {
-    connectionParameters.timeout = timeout;
-    signal(SIGALRM, handle_alarm);  
-    if (openSerialPort(connectionParameters.serialPort, connectionParameters.baudRate) < 0) {
-        printf("[ERROR] Failed to open serial port\n");
-        return -1;
-    }
+    baudRate = connectionParameters.baudRate;
+    memcpy(serialPort, connectionParameters.serialPort, 50);
+    openSerialPort(serialPort,baudRate);
+    if(fd < 0)return -1;
+    timeout = connectionParameters.timeout;
+    transmitions = connectionParameters.nRetransmissions;
+    alarmCount = 0;
+    unsigned char byte;
+    role = connectionParameters.role;
+
 
     if (connectionParameters.role == LlTx) {
         unsigned char setFrame[5] = {FLAG, ADDR_TX_COMMAND, CTRL_SET, 0x00, FLAG};
@@ -476,9 +493,9 @@ void sendDISC() {
 
 
 
-int llclose(LinkLayer connectionParameters, int showStatistics) {
+int llclose(int showStatistics) {
     
-    if (connectionParameters.role == LlTx) {
+    if (role == LlTx) {
         int retries = 0;
 
         while (retries < MAX_RETRIES) {
@@ -564,7 +581,7 @@ int llclose(LinkLayer connectionParameters, int showStatistics) {
         }
         printf("[INFO] Sent UA frame to confirm connection closure\n");
     } 
-    else if (connectionParameters.role == LlRx) {
+    else if (role == LlRx) {
         unsigned char byte;
         enum StateRCV state = START;
 
