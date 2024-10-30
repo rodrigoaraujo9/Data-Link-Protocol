@@ -250,11 +250,13 @@ int llwrite(const unsigned char *buf, int bufSize) {
     static int Ns = 0;
     unsigned char bcc2 = 0;
 
+    // Prepare the frame header
     frame[index++] = FLAG;
     frame[index++] = ADDR_TX_COMMAND;
     frame[index++] = (Ns == 0) ? 0x00 : 0x80;
     frame[index++] = BCC1(frame[1], frame[2]);
 
+    // Add the payload with byte stuffing
     for (int i = 0; i < bufSize; i++) {
         bcc2 ^= buf[i];
 
@@ -269,6 +271,7 @@ int llwrite(const unsigned char *buf, int bufSize) {
         }
     }
 
+    // Add BCC2 with byte stuffing if necessary
     if (bcc2 == FLAG) {
         frame[index++] = 0x7D;
         frame[index++] = 0x5E;
@@ -281,21 +284,58 @@ int llwrite(const unsigned char *buf, int bufSize) {
 
     frame[index++] = FLAG;
 
-    printf("[DEBUG] Prepared frame size: %d bytes (Including overhead)\n", index);
+    int retry = 0;
+    while (retry < MAX_RETRIES) {
+        // Send the frame
+        printf("[DEBUG] Sending frame, size: %d bytes\n", index);
+        int result = writeBytesSerialPort(frame, index);
 
-    int result = writeBytesSerialPort(frame, index);
-    if (result < 0 || result != index) {
-        printf("[ERROR] Failed to write full frame to serial port. Expected: %d, Sent: %d\n", index, result);
-        free(frame);
-        return ERR_WRITE_FAILED;
+        if (result < 0 || result != index) {
+            printf("[ERROR] Failed to write full frame to serial port. Expected: %d, Sent: %d\n", index, result);
+            free(frame);
+            return ERR_WRITE_FAILED;
+        }
+
+        // Wait for ACK or REJ from the receiver
+        unsigned char ackByte;
+        int ackStatus = -1;
+        int timeoutCounter = 0;
+
+        while (timeoutCounter < TIMEOUT_SECONDS) {
+            ackStatus = readByteSerialPort(&ackByte);
+
+            if (ackStatus > 0) {
+                if (ackByte == CTRL_RR0 || ackByte == CTRL_RR1) {
+                    // RR received, frame was successfully acknowledged
+                    printf("[DEBUG] Frame acknowledged with RR. Frame transmitted successfully.\n");
+                    free(frame);
+                    Ns = (Ns + 1) % 2; // Toggle Ns for the next frame
+                    return bufSize;
+                } else if (ackByte == CTRL_REJ0 || ackByte == CTRL_REJ1) {
+                    // REJ received, frame was rejected, resend it
+                    printf("[WARN] Frame rejected, resending (retry %d/%d)\n", retry + 1, MAX_RETRIES);
+                    break;
+                }
+            }
+
+            // No response received, increment timeout counter
+            timeoutCounter++;
+            sleep(1);
+        }
+
+        if (timeoutCounter >= TIMEOUT_SECONDS) {
+            printf("[ERROR] No response from receiver, retrying (retry %d/%d)\n", retry + 1, MAX_RETRIES);
+        }
+
+        retry++;
     }
 
+    // If we exhausted the retries, report failure
+    printf("[ERROR] Frame transmission failed after maximum retries\n");
     free(frame);
-    printf("[DEBUG] Sent full frame successfully, frame size: %d bytes\n", index);
-
-    Ns = (Ns + 1) % 2;
-    return bufSize;
+    return ERR_MAX_RETRIES_EXCEEDED;
 }
+
 
 void sendRR() {
     unsigned char rrFrame[5] = {FLAG, ADDR_RX_COMMAND, CTRL_RR0, 0x00, FLAG};
