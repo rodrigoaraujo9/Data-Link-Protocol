@@ -243,16 +243,20 @@ int llwrite(const unsigned char *buf, int bufSize) {
     int overhead = 6;
     int maxFrameSize = bufSize * 2 + overhead;
     unsigned char *frame = (unsigned char*)malloc(maxFrameSize);
-
+    
     if (frame == NULL) {
         printf("[ERROR] Memory allocation failed\n");
         return -1;
     }
 
     int index = 0;
-    static int Ns = 0;
+    static int Ns = 0; // Sequence number
     unsigned char bcc2 = 0;
+    int retries = 0;
+    int result = 0;
+    enum StateRCV ackState = START;
 
+    // Construct the frame with the buffer data and BCC checks
     frame[index++] = FLAG;
     frame[index++] = ADDR_TX_COMMAND;
     frame[index++] = (Ns == 0) ? 0x00 : 0x80;
@@ -260,7 +264,6 @@ int llwrite(const unsigned char *buf, int bufSize) {
 
     for (int i = 0; i < bufSize; i++) {
         bcc2 ^= buf[i];
-
         if (buf[i] == FLAG) {
             frame[index++] = 0x7D;
             frame[index++] = 0x5E;
@@ -283,22 +286,90 @@ int llwrite(const unsigned char *buf, int bufSize) {
     }
 
     frame[index++] = FLAG;
+    
+    // Retry loop for sending the frame
+    while (retries < MAX_RETRIES) {
+        printf("[INFO] Attempting to send frame (Attempt %d of %d)\n", retries + 1, MAX_RETRIES);
+        
+        result = writeBytesSerialPort(frame, index);
+        if (result < 0 || result != index) {
+            printf("[ERROR] Failed to write full frame to serial port. Attempt %d\n", retries + 1);
+            retries++;
+            continue;
+        }
 
-    printf("[DEBUG] Prepared frame size: %d bytes (Including overhead)\n", index);
+        printf("[DEBUG] Frame sent successfully, awaiting acknowledgment...\n");
+        alarm(1);
+        alarmTriggered = 0;
 
-    int result = writeBytesSerialPort(frame, index);
-    if (result < 0 || result != index) {
-        printf("[ERROR] Failed to write full frame to serial port. Expected: %d, Sent: %d\n", index, result);
-        free(frame);
-        return ERR_WRITE_FAILED;
+        // Waiting for RR (acknowledgment)
+        while (ackState != RCV_STOP && alarmTriggered == 0) {
+            unsigned char ackByte;
+            int readResult = readByteSerialPort(&ackByte);
+
+            if (readResult <= 0) {
+                if (alarmTriggered) {
+                    retries++;
+                    if (retries >= MAX_RETRIES) {
+                        printf("[ERROR] Maximum retries exceeded while waiting for RR\n");
+                        free(frame);
+                        return ERR_MAX_RETRIES_EXCEEDED;
+                    }
+                    printf("[WARN] Timeout waiting for RR, retrying frame transmission\n");
+                    break;
+                }
+                continue;
+            }
+
+            // Processing the acknowledgment frame (RR/REJ)
+            switch (ackState) {
+                case START:
+                    if (ackByte == FLAG) ackState = FLAG_RCV;
+                    break;
+                case FLAG_RCV:
+                    if (ackByte == ADDR_RX_COMMAND) ackState = A_RCV;
+                    else if (ackByte != FLAG) ackState = START;
+                    break;
+                case A_RCV:
+                    if (ackByte == CTRL_RR0 || ackByte == CTRL_RR1) {
+                        int Nr = (ackByte == CTRL_RR0) ? 0 : 1;
+                        if (Nr == Ns) { // Valid acknowledgment
+                            ackState = RCV_STOP;
+                            printf("[INFO] Acknowledgment (RR) received, transmission confirmed\n");
+                            free(frame);
+                            Ns = (Ns + 1) % 2; // Toggle Ns only after RR
+                            return bufSize;
+                        }
+                    } else if (ackByte == CTRL_REJ0 || ackByte == CTRL_REJ1) {
+                        printf("[WARN] REJ received, resending frame without toggling sequence\n");
+                        ackState = START;  // Reset state machine
+                        break;
+                    } else if (ackByte == FLAG) {
+                        ackState = FLAG_RCV;
+                    } else {
+                        ackState = START;
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        if (ackState == RCV_STOP) break; // Break the retry loop if acknowledgment was received
+
+        if (retries >= MAX_RETRIES) {
+            printf("[ERROR] Failed to get acknowledgment after maximum retries\n");
+            free(frame);
+            return ERR_MAX_RETRIES_EXCEEDED;
+        }
     }
 
+    printf("[ERROR] Transmission failed after retries\n");
     free(frame);
-    printf("[DEBUG] Sent full frame successfully, frame size: %d bytes\n", index);
-
-    Ns = (Ns + 1) % 2;
-    return bufSize;
+    return ERR_WRITE_TIMEOUT;
 }
+
+
 
 void sendRR() {
     unsigned char rrFrame[5] = {FLAG, ADDR_RX_COMMAND, CTRL_RR0, 0x00, FLAG};
@@ -330,6 +401,7 @@ int llread(unsigned char *packet) {
     int retries = 0;
     const int maxRetries = 20;
     const int readTimeout = 5;
+    static int expectedSequence = 0;
 
     printf("[DEBUG] Starting llread\n");
 
@@ -389,9 +461,16 @@ int llread(unsigned char *packet) {
             case BCC_OK:
                 if (byte == FLAG) {
                     if (bcc2 == 0) {
-                        state = RCV_STOP;
-                        sendRR();
-                        printf("[INFO] Frame successfully received\n");
+                        if (expectedSequence == ((frame[2] & 0x80) ? 1 : 0)) {
+                            state = RCV_STOP;
+                            sendRR(); // Send acknowledgment
+                            printf("[INFO] Frame successfully received\n");
+                            expectedSequence = (expectedSequence + 1) % 2;
+                        } else {
+                            sendREJ(); // Send rejection for unexpected sequence
+                            printf("[ERROR] Unexpected sequence number. Expected: %d, Received: %d\n", expectedSequence, frame[2] & 0x80 ? 1 : 0);
+                            state = START; // Restart for next frame
+                        }
                     } else {
                         sendREJ();
                         printf("[ERROR] BCC2 mismatch, frame rejected\n");
@@ -409,7 +488,7 @@ int llread(unsigned char *packet) {
                 }
                 break;
             default:
-                                break;
+                break;
         }
     }
 
