@@ -5,21 +5,66 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
+#include <math.h>
+#include <sys/time.h>
 
 #define PACKET_START 0x02
 #define PACKET_END 0x03
 #define PACKET_DATA 0x01
 #define MAX_DATA_SIZE 256
+#define NUM_RUNS 2
 
-double calculateEfficiency(int totalDataBytesReceived, int baudRate, double transmissionTime) {
+int totalBytesSent = 0;
+int totalBytesReceived = 0;  // Track total bytes received by rx
+// Calculate received bitrate
+double calculateReceivedBitrate(int totalBytesSent, double transmissionTime) {
+    int totalBitsSent = totalBytesSent * 8;  // Convert bytes to bits
+    return totalBitsSent / transmissionTime;
+}
+
+// Function to calculate the average
+double calculateAverage(double* data, int num_elements) {
+    double sum = 0.0;
+    for (int i = 0; i < num_elements; i++) {
+        sum += data[i];
+    }
+    return sum / num_elements;
+}
+
+// Function to calculate the standard deviation
+double calculateStdDev(double* data, int num_elements, double mean) {
+    double sum = 0.0;
+    for (int i = 0; i < num_elements; i++) {
+        sum += pow(data[i] - mean, 2);
+    }
+    return sqrt(sum / num_elements);
+}
+
+// Function to get the current time in seconds
+double getCurrentTime() {
+    struct timespec spec;
+    clock_gettime(CLOCK_REALTIME, &spec);
+    return spec.tv_sec + spec.tv_nsec / 1e9;
+}
+
+
+
+double calculateEfficiency(int totalDataBytesSent, int baudRate, double transmissionTime) {
     if (baudRate == 0 || transmissionTime <= 0) {
         printf("[ERROR] Invalid parameters for efficiency calculation. Baud rate or transmission time is zero.\n");
         return 0.0;
     }
 
-    int totalBitsReceived = totalDataBytesReceived * 8;  // Convert bytes to bits
-    double receivedBitrate = (double)totalBitsReceived / transmissionTime;
-    double efficiency = receivedBitrate / baudRate;
+    int totalBitsSent = totalDataBytesSent * 8;  // Convert bytes to bits
+    double sentBitrate = (double)totalBitsSent / transmissionTime;
+
+    // Debug print statements to trace values
+    printf("[DEBUG] Total Bits Sent: %d\n", totalBitsSent);
+    printf("[DEBUG] Transmission Time: %f seconds\n", transmissionTime);
+    printf("[DEBUG] Sent Bitrate (R): %f bps\n", sentBitrate);
+    printf("[DEBUG] Baud Rate (C): %d bps\n", baudRate);
+
+    double efficiency = sentBitrate / baudRate;
 
     printf("[INFO] Efficiency (S) = %.6f, Transmission Time = %.6f seconds\n", efficiency, transmissionTime);
     return efficiency;
@@ -135,18 +180,17 @@ void sendFile(const char* filename) {
 }
 
 
-
-// Helper function to calculate efficiency
-
-
 void receiveFile(const char* filename) {
     unsigned char buffer[512];
     int fileSize = 0;
     unsigned char* fileData = NULL;
+    int totalBytesReceived = 0;  // Track total bytes received
     int bytesReceived = 0;
     int expectedSeq = 0;
 
     int receiving = 1;
+    double startTime = getCurrentTime();
+
     while (receiving) {
         printf("[DEBUG] Starting llread\n");
         int packetSize = llread(buffer);
@@ -182,7 +226,8 @@ void receiveFile(const char* filename) {
 
             memcpy(&fileData[bytesReceived], &buffer[4], dataSize);
             bytesReceived += dataSize;
-            printf("[INFO] Data packet received. Sequence: %d, Size: %d, Total bytes received: %d\n", seq, dataSize, bytesReceived);
+            totalBytesReceived += dataSize;  // Track total bytes correctly
+            printf("[INFO] Data packet received. Sequence: %d, Size: %d, Total bytes received: %d\n", seq, dataSize, totalBytesReceived);
 
             expectedSeq = (expectedSeq + 1) % 256;
         } else if (packetType == PACKET_END) {
@@ -212,42 +257,90 @@ void receiveFile(const char* filename) {
     }
 
     free(fileData);
+
+    // Efficiency Calculation after receiving the file
+    double endTime = getCurrentTime();
+    double transmissionTime = endTime - startTime;
+    double efficiency = calculateEfficiency(totalBytesReceived, /*baudRate=*/9600, transmissionTime);
+    printf("[INFO] Run Efficiency (S) = %f, Transmission Time = %f seconds\n", efficiency, transmissionTime);
 }
 
-void applicationLayer(const char *serialPort, const char *role, int baudRate, int nTries, int timeout, const char *filename) {
+void applicationLayer(const char* serialPort, const char* role, int baudRate, int nTries, int timeout, const char* filename) {
     LinkLayer connectionParams;
-
     strncpy(connectionParams.serialPort, serialPort, sizeof(connectionParams.serialPort) - 1);
     connectionParams.serialPort[sizeof(connectionParams.serialPort) - 1] = '\0';
-
     connectionParams.baudRate = baudRate;
     connectionParams.nRetransmissions = nTries;
     connectionParams.timeout = timeout;
 
-    if (strcmp(role, "tx") == 0) {
-        connectionParams.role = LlTx;
-        printf("[INFO] Starting as Transmitter on %s\n", connectionParams.serialPort);
-        if (llopen(connectionParams) < 0) {
-            printf("[ERROR] Failed to establish link layer connection.\n");
+    double efficiencies[NUM_RUNS];
+    double transmissionTimes[NUM_RUNS];
+
+    for (int i = 0; i < NUM_RUNS; i++) {
+        printf("[INFO] Starting Run %d\n", i + 1);
+
+        totalBytesSent = 0;   // Reset bytes for `tx`
+        totalBytesReceived = 0; // Reset bytes for `rx`
+
+        if (strcmp(role, "tx") == 0) {
+            connectionParams.role = LlTx;
+            if (llopen(connectionParams) < 0) {
+                printf("[ERROR] Failed to establish link layer connection.\n");
+                return;
+            }
+
+            double startTime = getCurrentTime();
+            sendFile(filename);  // Sends the file and updates `totalBytesSent`
+            double endTime = getCurrentTime();
+
+            double transmissionTime = endTime - startTime;
+            transmissionTimes[i] = transmissionTime;
+            double R = calculateReceivedBitrate(totalBytesSent, transmissionTime);
+            efficiencies[i] = R / connectionParams.baudRate;
+
+            printf("[INFO] TX Run %d - Efficiency (S) = %f, Transmission Time = %f seconds\n", 
+                   i + 1, efficiencies[i], transmissionTimes[i]);
+
+            if (llclose(1) < 0) {
+                printf("[ERROR] Failed to close the link layer connection.\n");
+            }
+        } else if (strcmp(role, "rx") == 0) {
+            connectionParams.role = LlRx;
+            if (llopen(connectionParams) < 0) {
+                printf("[ERROR] Failed to establish link layer connection.\n");
+                return;
+            }
+
+            double startTime = getCurrentTime();
+            receiveFile("received.gif");  // Receives the file and updates `totalBytesReceived`
+            double endTime = getCurrentTime();
+
+            double transmissionTime = endTime - startTime;
+            transmissionTimes[i] = transmissionTime;
+            double R = calculateReceivedBitrate(totalBytesReceived, transmissionTime);
+            efficiencies[i] = R / connectionParams.baudRate;
+
+            printf("[INFO] RX Run %d - Efficiency (S) = %f, Transmission Time = %f seconds\n", 
+                   i + 1, efficiencies[i], transmissionTimes[i]);
+
+            if (llclose(1) < 0) {
+                printf("[ERROR] Failed to close the link layer connection.\n");
+            }
+        } else {
+            printf("[ERROR] Invalid role specified. Must be 'tx' or 'rx'.\n");
             return;
         }
-
-        sendFile(filename);
-    } else if (strcmp(role, "rx") == 0) {
-        connectionParams.role = LlRx;
-        printf("[INFO] Starting as Receiver on %s\n", connectionParams.serialPort);
-        if (llopen(connectionParams) < 0) {
-            printf("[ERROR] Failed to establish link layer connection.\n");
-            return;
-        }
-
-        receiveFile("received.gif");
-    } else {
-        printf("[ERROR] Invalid role specified. Must be 'tx' or 'rx'.\n");
-        return;
     }
 
-    if (llclose(1) < 0) {
-        printf("[ERROR] Failed to close the link layer connection.\n");
-    }
+    // Calculate averages and standard deviations
+    double avgEfficiency = calculateAverage(efficiencies, NUM_RUNS);
+    double avgTransmissionTime = calculateAverage(transmissionTimes, NUM_RUNS);
+    double stdDevEfficiency = calculateStdDev(efficiencies, NUM_RUNS, avgEfficiency);
+    double stdDevTransmissionTime = calculateStdDev(transmissionTimes, NUM_RUNS, avgTransmissionTime);
+
+    printf("[INFO] Summary of %d runs:\n", NUM_RUNS);
+    printf("Average Efficiency (S_avg) = %f\n", avgEfficiency);
+    printf("Standard Deviation of Efficiency (S_std) = %f\n", stdDevEfficiency);
+    printf("Average Transmission Time (T_avg) = %f seconds\n", avgTransmissionTime);
+    printf("Standard Deviation of Transmission Time (T_std) = %f seconds\n", stdDevTransmissionTime);
 }

@@ -20,7 +20,7 @@
 #define CTRL_DISC 0x0B
 #define BCC1(addr, ctrl) ((addr) ^ (ctrl))
 #define MAX_RETRIES 10
-#define TIMEOUT_SECONDS 3
+#define TIMEOUT_SECONDS 2
 #define READ_RETRIES 5
 #define ERR_MAX_RETRIES_EXCEEDED -2
 #define ERR_WRITE_FAILED -3
@@ -34,6 +34,11 @@
 
 enum StateSND {SEND_SET, WAIT_UA, SND_STOP};
 enum StateRCV {START, FLAG_RCV, A_RCV, C_RCV, BCC_OK, RCV_STOP};
+
+extern int totalBytesSent;
+extern int totalBytesReceived;
+extern double transmissionStartTime;
+extern double transmissionEndTime;
 
 volatile int alarmTriggered = FALSE;
 int alarmCount = 0;
@@ -328,6 +333,9 @@ int llwrite(const unsigned char *buf, int bufSize) {
             continue;
         }
 
+        totalBytesSent += index;  // Track total bytes sent
+        printf("[DEBUG] Frame sent successfully, total bytes sent so far: %d\n", totalBytesSent);
+
         printf("[DEBUG] Frame sent successfully, awaiting acknowledgment...\n");
         alarm(1);
         alarmTriggered = 0;
@@ -489,7 +497,9 @@ int llread(unsigned char *packet) {
                             state = RCV_STOP;
                             sendRR(); // Send acknowledgment
                             printf("[INFO] Frame successfully received\n");
+                            
                             expectedSequence = (expectedSequence + 1) % 2;
+                            totalBytesReceived += bytesRead;
                         } else {
                             sendREJ(); // Send rejection for unexpected sequence
                             printf("[ERROR] Unexpected sequence number. Expected: %d, Received: %d\n", expectedSequence, frame[2] & 0x80 ? 1 : 0);
