@@ -4,6 +4,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <time.h>
 
 #define PACKET_START 0x02
 #define PACKET_END 0x03
@@ -112,12 +113,24 @@ void sendFile(const char* filename) {
     printf("[INFO] File transmission completed: %s\n", filename);
 }
 
+
+
+// Helper function to calculate efficiency
+double calculateEfficiency(int totalBitsReceived, double transmissionTime, int linkCapacity) {
+    double receivedBitrate = totalBitsReceived / transmissionTime; // bits per second
+    double efficiency = receivedBitrate / linkCapacity;
+    return efficiency;
+}
+
 void receiveFile(const char* filename) {
     unsigned char buffer[512];
     int fileSize = 0;
     unsigned char* fileData = NULL;
     int bytesReceived = 0;
     int expectedSeq = 0;
+
+    clock_t startTime, endTime;  // For measuring time
+    startTime = clock();         // Start time at the beginning of file reception
 
     int receiving = 1;
     while (receiving) {
@@ -183,6 +196,16 @@ void receiveFile(const char* filename) {
             receiving = 0;
         }
     }
+
+    endTime = clock(); // End time at the completion of the file reception
+
+    // Calculate transmission time and efficiency
+    double transmissionTime = (double)(endTime - startTime) / CLOCKS_PER_SEC; // in seconds
+    int totalBitsReceived = bytesReceived * 8; // Convert bytes to bits
+    int linkCapacity = 9600; // Example link capacity in bps; adjust if needed
+
+    double efficiency = calculateEfficiency(totalBitsReceived, transmissionTime, linkCapacity);
+    printf("[INFO] Efficiency (S) = %f, Transmission Time = %f seconds\n", efficiency, transmissionTime);
 
     free(fileData);
 }

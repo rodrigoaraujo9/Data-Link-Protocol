@@ -4,7 +4,9 @@
 #include <unistd.h>
 #include <sys/signal.h>
 #include <stdlib.h>
-
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <time.h>
 #define _POSIX_SOURCE 1
 #define FLAG 0x7E
 #define ADDR_TX_COMMAND 0x03
@@ -420,7 +422,7 @@ int llread(unsigned char *packet) {
     int bytesRead = 0;
     int retries = 0;
     const int maxRetries = 20;
-    const int readTimeout = 5;
+    const int readTimeout = 1;
     static int expectedSequence = 0;
 
     printf("[DEBUG] Starting llread\n");
