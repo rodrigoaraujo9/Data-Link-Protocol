@@ -12,7 +12,11 @@
 #define PACKET_END 0x03
 #define PACKET_DATA 0x01
 #define MAX_DATA_SIZE 256
-#define NUM_RUNS 2
+#define NUM_RUNS 1
+
+extern double HEADER_ERR_PROB;  // Header error probability
+extern double DATA_ERR_PROB;    // Data error probability
+extern int PROP_DELAY_MS;
 
 int totalBytesSent = 0;
 int totalBytesReceived = 0;  // Track total bytes received by rx
@@ -276,71 +280,87 @@ void applicationLayer(const char* serialPort, const char* role, int baudRate, in
     double efficiencies[NUM_RUNS];
     double transmissionTimes[NUM_RUNS];
 
-    for (int i = 0; i < NUM_RUNS; i++) {
-        printf("[INFO] Starting Run %d\n", i + 1);
+    // Define error rates and propagation delays to test
+    double FERs[] = {0.0, 0.1};    // Example FER values
+    int T_props[] = {100, 300};         // Propagation delays in milliseconds
+    int numFERs = sizeof(FERs) / sizeof(FERs[0]);
+    int numDelays = sizeof(T_props) / sizeof(T_props[0]);
 
-        totalBytesSent = 0;   // Reset bytes for `tx`
-        totalBytesReceived = 0; // Reset bytes for `rx`
+    for (int f = 0; f < numFERs; f++) {
+        for (int d = 0; d < numDelays; d++) {
+            HEADER_ERR_PROB = FERs[f];       // Set header error probability
+            DATA_ERR_PROB = FERs[f];         // Set data error probability
+            PROP_DELAY_MS = T_props[d];      // Set propagation delay in ms
 
-        if (strcmp(role, "tx") == 0) {
-            connectionParams.role = LlTx;
-            if (llopen(connectionParams) < 0) {
-                printf("[ERROR] Failed to establish link layer connection.\n");
-                return;
+            printf("\n[INFO] Testing with FER=%.2f, T_prop=%d ms\n", FERs[f], T_props[d]);
+
+            for (int i = 0; i < NUM_RUNS; i++) {
+                printf("[INFO] Starting Run %d\n", i + 1);
+
+                totalBytesSent = 0;   // Reset bytes for `tx`
+                totalBytesReceived = 0; // Reset bytes for `rx`
+
+                if (strcmp(role, "tx") == 0) {
+                    connectionParams.role = LlTx;
+                    if (llopen(connectionParams) < 0) {
+                        printf("[ERROR] Failed to establish link layer connection.\n");
+                        return;
+                    }
+
+                    double startTime = getCurrentTime();
+                    sendFile(filename);  // Sends the file and updates `totalBytesSent`
+                    double endTime = getCurrentTime();
+
+                    double transmissionTime = endTime - startTime;
+                    transmissionTimes[i] = transmissionTime;
+                    double R = calculateReceivedBitrate(totalBytesSent, transmissionTime);
+                    efficiencies[i] = R / connectionParams.baudRate;
+
+                    printf("[INFO] TX Run %d - Efficiency (S) = %f, Transmission Time = %f seconds\n", 
+                           i + 1, efficiencies[i], transmissionTimes[i]);
+
+                    if (llclose(1) < 0) {
+                        printf("[ERROR] Failed to close the link layer connection.\n");
+                    }
+                } else if (strcmp(role, "rx") == 0) {
+                    connectionParams.role = LlRx;
+                    if (llopen(connectionParams) < 0) {
+                        printf("[ERROR] Failed to establish link layer connection.\n");
+                        return;
+                    }
+
+                    double startTime = getCurrentTime();
+                    receiveFile("received.gif");  // Receives the file and updates `totalBytesReceived`
+                    double endTime = getCurrentTime();
+
+                    double transmissionTime = endTime - startTime;
+                    transmissionTimes[i] = transmissionTime;
+                    double R = calculateReceivedBitrate(totalBytesReceived, transmissionTime);
+                    efficiencies[i] = R / connectionParams.baudRate;
+
+                    printf("[INFO] RX Run %d - Efficiency (S) = %f, Transmission Time = %f seconds\n", 
+                           i + 1, efficiencies[i], transmissionTimes[i]);
+
+                    if (llclose(1) < 0) {
+                        printf("[ERROR] Failed to close the link layer connection.\n");
+                    }
+                } else {
+                    printf("[ERROR] Invalid role specified. Must be 'tx' or 'rx'.\n");
+                    return;
+                }
             }
 
-            double startTime = getCurrentTime();
-            sendFile(filename);  // Sends the file and updates `totalBytesSent`
-            double endTime = getCurrentTime();
+            // Calculate averages and standard deviations for the current FER and delay combination
+            double avgEfficiency = calculateAverage(efficiencies, NUM_RUNS);
+            double avgTransmissionTime = calculateAverage(transmissionTimes, NUM_RUNS);
+            double stdDevEfficiency = calculateStdDev(efficiencies, NUM_RUNS, avgEfficiency);
+            double stdDevTransmissionTime = calculateStdDev(transmissionTimes, NUM_RUNS, avgTransmissionTime);
 
-            double transmissionTime = endTime - startTime;
-            transmissionTimes[i] = transmissionTime;
-            double R = calculateReceivedBitrate(totalBytesSent, transmissionTime);
-            efficiencies[i] = R / connectionParams.baudRate;
-
-            printf("[INFO] TX Run %d - Efficiency (S) = %f, Transmission Time = %f seconds\n", 
-                   i + 1, efficiencies[i], transmissionTimes[i]);
-
-            if (llclose(1) < 0) {
-                printf("[ERROR] Failed to close the link layer connection.\n");
-            }
-        } else if (strcmp(role, "rx") == 0) {
-            connectionParams.role = LlRx;
-            if (llopen(connectionParams) < 0) {
-                printf("[ERROR] Failed to establish link layer connection.\n");
-                return;
-            }
-
-            double startTime = getCurrentTime();
-            receiveFile("received.gif");  // Receives the file and updates `totalBytesReceived`
-            double endTime = getCurrentTime();
-
-            double transmissionTime = endTime - startTime;
-            transmissionTimes[i] = transmissionTime;
-            double R = calculateReceivedBitrate(totalBytesReceived, transmissionTime);
-            efficiencies[i] = R / connectionParams.baudRate;
-
-            printf("[INFO] RX Run %d - Efficiency (S) = %f, Transmission Time = %f seconds\n", 
-                   i + 1, efficiencies[i], transmissionTimes[i]);
-
-            if (llclose(1) < 0) {
-                printf("[ERROR] Failed to close the link layer connection.\n");
-            }
-        } else {
-            printf("[ERROR] Invalid role specified. Must be 'tx' or 'rx'.\n");
-            return;
+            printf("[INFO] Summary for FER=%.2f, T_prop=%d ms:\n", FERs[f], T_props[d]);
+            printf("Average Efficiency (S_avg) = %f\n", avgEfficiency);
+            printf("Standard Deviation of Efficiency (S_std) = %f\n", stdDevEfficiency);
+            printf("Average Transmission Time (T_avg) = %f seconds\n", avgTransmissionTime);
+            printf("Standard Deviation of Transmission Time (T_std) = %f seconds\n", stdDevTransmissionTime);
         }
     }
-
-    // Calculate averages and standard deviations
-    double avgEfficiency = calculateAverage(efficiencies, NUM_RUNS);
-    double avgTransmissionTime = calculateAverage(transmissionTimes, NUM_RUNS);
-    double stdDevEfficiency = calculateStdDev(efficiencies, NUM_RUNS, avgEfficiency);
-    double stdDevTransmissionTime = calculateStdDev(transmissionTimes, NUM_RUNS, avgTransmissionTime);
-
-    printf("[INFO] Summary of %d runs:\n", NUM_RUNS);
-    printf("Average Efficiency (S_avg) = %f\n", avgEfficiency);
-    printf("Standard Deviation of Efficiency (S_std) = %f\n", stdDevEfficiency);
-    printf("Average Transmission Time (T_avg) = %f seconds\n", avgTransmissionTime);
-    printf("Standard Deviation of Transmission Time (T_std) = %f seconds\n", stdDevTransmissionTime);
 }

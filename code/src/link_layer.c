@@ -28,9 +28,6 @@
 #define ERR_INVALID_BCC -5
 #define ERR_FRAME_REJECTED -6
 #define ERR_WRITE_TIMEOUT -7
-#define HEADER_ERR_PROB 0.7
-#define DATA_ERR_PROB  0.6
-#define PROP_DELAY_MS 300
 
 enum StateSND {SEND_SET, WAIT_UA, SND_STOP};
 enum StateRCV {START, FLAG_RCV, A_RCV, C_RCV, BCC_OK, RCV_STOP};
@@ -39,6 +36,10 @@ extern int totalBytesSent;
 extern int totalBytesReceived;
 extern double transmissionStartTime;
 extern double transmissionEndTime;
+
+double HEADER_ERR_PROB =0.7;
+double DATA_ERR_PROB  =0.6;
+int PROP_DELAY_MS =300;
 
 volatile int alarmTriggered = FALSE;
 int alarmCount = 0;
@@ -429,7 +430,7 @@ int llread(unsigned char *packet) {
     unsigned char bcc2 = 0;
     int bytesRead = 0;
     int retries = 0;
-    const int maxRetries = 20;
+    const int maxRetries = MAX_RETRIES;
     const int readTimeout = 1;
     static int expectedSequence = 0;
 
