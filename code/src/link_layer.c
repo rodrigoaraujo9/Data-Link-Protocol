@@ -26,6 +26,9 @@
 #define ERR_INVALID_BCC -5
 #define ERR_FRAME_REJECTED -6
 #define ERR_WRITE_TIMEOUT -7
+#define HEADER_ERR_PROB 0.2
+#define DATA_ERR_PROB  0.2
+#define PROP_DELAY_MS 100
 
 enum StateSND {SEND_SET, WAIT_UA, SND_STOP};
 enum StateRCV {START, FLAG_RCV, A_RCV, C_RCV, BCC_OK, RCV_STOP};
@@ -33,6 +36,7 @@ enum StateRCV {START, FLAG_RCV, A_RCV, C_RCV, BCC_OK, RCV_STOP};
 volatile int alarmTriggered = FALSE;
 int alarmCount = 0;
 int timeout = TIMEOUT_SECONDS;
+LinkLayerRole role;
 
 void handle_alarm(int sig) {
     alarmTriggered = 1;
@@ -41,7 +45,31 @@ void handle_alarm(int sig) {
     alarm(1);
 }
 
-LinkLayerRole role;
+void introduceErrors(unsigned char *frame, int frameSize, double headerErrorProb, double dataErrorProb) {
+    srand(time(NULL)); // Seed random generator, if needed
+
+    // Introduce header error with probability `headerErrorProb`
+    if ((double)rand() / RAND_MAX < headerErrorProb) {
+        frame[1] ^= 0xFF; // Flip all bits in the address field as an example
+        printf("[INFO] Header error introduced\n");
+    }
+
+    // Introduce data errors with probability `dataErrorProb` for each byte in the data field
+    for (int i = 4; i < frameSize - 2; i++) { // Assuming data starts after the header
+        if ((double)rand() / RAND_MAX < dataErrorProb) {
+            frame[i] ^= 0xFF; // Flip all bits in the byte
+            printf("[INFO] Data error introduced at byte %d\n", i);
+        }
+    }
+}
+
+void applyPropagationDelay() {
+    if (PROP_DELAY_MS > 0) {
+        usleep(PROP_DELAY_MS * 1000); // Convert ms to microseconds
+        printf("[INFO] Applied propagation delay of %d ms\n", PROP_DELAY_MS);
+    }
+}
+
 
 int llopen(LinkLayer connectionParameters) {
     connectionParameters.timeout = timeout;
@@ -382,14 +410,6 @@ void sendREJ() {
     rejFrame[3] = BCC1(rejFrame[1], rejFrame[2]);
     writeBytesSerialPort(rejFrame, sizeof(rejFrame));
 }
-void introduceErrors(unsigned char *data, int length, double fer) {
-    for (int i = 0; i < length; i++) {
-        if ((double)rand() / RAND_MAX < fer) {
-            data[i] ^= 0xFF; // Flip all bits in the byte
-        }
-    }
-
-}
 
 int llread(unsigned char *packet) {
     enum StateRCV state = START;
@@ -461,6 +481,8 @@ int llread(unsigned char *packet) {
             case BCC_OK:
                 if (byte == FLAG) {
                     if (bcc2 == 0) {
+                        applyPropagationDelay();
+                        introduceErrors(frame, frameIndex, HEADER_ERR_PROB, DATA_ERR_PROB);
                         if (expectedSequence == ((frame[2] & 0x80) ? 1 : 0)) {
                             state = RCV_STOP;
                             sendRR(); // Send acknowledgment
