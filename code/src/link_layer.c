@@ -20,7 +20,7 @@
 #define CTRL_DISC 0x0B
 #define BCC1(addr, ctrl) ((addr) ^ (ctrl))
 #define MAX_RETRIES 10
-#define TIMEOUT_SECONDS 2
+#define TIMEOUT_SECONDS 0
 #define READ_RETRIES 5
 #define ERR_MAX_RETRIES_EXCEEDED -2
 #define ERR_WRITE_FAILED -3
@@ -431,7 +431,7 @@ int llread(unsigned char *packet) {
     int bytesRead = 0;
     int retries = 0;
     const int maxRetries = MAX_RETRIES;
-    const int readTimeout = 1;
+    const int readTimeout = 0;
     static int expectedSequence = 0;
 
     printf("[DEBUG] Starting llread\n");
