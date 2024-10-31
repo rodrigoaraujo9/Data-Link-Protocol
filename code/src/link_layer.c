@@ -54,18 +54,15 @@ void handle_alarm(int sig) {
 }
 
 void introduceErrors(unsigned char *frame, int frameSize, double headerErrorProb, double dataErrorProb) {
-    srand(time(NULL)); // Seed random generator, if needed
-
-    // Introduce header error with probability `headerErrorProb`
+    srand(time(NULL));
     if ((double)rand() / RAND_MAX < headerErrorProb) {
-        frame[1] ^= 0xFF; // Flip all bits in the address field as an example
+        frame[1] ^= 0xFF;
         printf("[INFO] Header error introduced\n");
     }
 
-    // Introduce data errors with probability `dataErrorProb` for each byte in the data field
-    for (int i = 4; i < frameSize - 2; i++) { // Assuming data starts after the header
+    for (int i = 4; i < frameSize - 2; i++) {
         if ((double)rand() / RAND_MAX < dataErrorProb) {
-            frame[i] ^= 0xFF; // Flip all bits in the byte
+            frame[i] ^= 0xFF;
             printf("[INFO] Data error introduced at byte %d\n", i);
         }
     }
@@ -73,7 +70,7 @@ void introduceErrors(unsigned char *frame, int frameSize, double headerErrorProb
 
 void applyPropagationDelay() {
     if (PROP_DELAY_MS > 0) {
-        usleep(PROP_DELAY_MS * 1000); // Convert ms to microseconds
+        usleep(PROP_DELAY_MS * 1000);
         printf("[INFO] Applied propagation delay of %d ms\n", PROP_DELAY_MS);
     }
 }
@@ -286,13 +283,12 @@ int llwrite(const unsigned char *buf, int bufSize) {
     }
 
     int index = 0;
-    static int Ns = 0; // Sequence number
+    static int Ns = 0;
     unsigned char bcc2 = 0;
     int retries = 0;
     int result = 0;
     enum StateRCV ackState = START;
 
-    // Construct the frame with the buffer data and BCC checks
     frame[index++] = FLAG;
     frame[index++] = ADDR_TX_COMMAND;
     frame[index++] = (Ns == 0) ? 0x00 : 0x80;
@@ -323,7 +319,6 @@ int llwrite(const unsigned char *buf, int bufSize) {
 
     frame[index++] = FLAG;
     
-    // Retry loop for sending the frame
     while (retries < MAX_RETRIES) {
         printf("[INFO] Attempting to send frame (Attempt %d of %d)\n", retries + 1, MAX_RETRIES);
         
@@ -334,14 +329,13 @@ int llwrite(const unsigned char *buf, int bufSize) {
             continue;
         }
 
-        totalBytesSent += index;  // Track total bytes sent
+        totalBytesSent += index;
         printf("[DEBUG] Frame sent successfully, total bytes sent so far: %d\n", totalBytesSent);
 
         printf("[DEBUG] Frame sent successfully, awaiting acknowledgment...\n");
         alarm(1);
         alarmTriggered = 0;
 
-        // Waiting for RR (acknowledgment)
         while (ackState != RCV_STOP && alarmTriggered == 0) {
             unsigned char ackByte;
             int readResult = readByteSerialPort(&ackByte);
@@ -360,7 +354,6 @@ int llwrite(const unsigned char *buf, int bufSize) {
                 continue;
             }
 
-            // Processing the acknowledgment frame (RR/REJ)
             switch (ackState) {
                 case START:
                     if (ackByte == FLAG) ackState = FLAG_RCV;
@@ -372,16 +365,16 @@ int llwrite(const unsigned char *buf, int bufSize) {
                 case A_RCV:
                     if (ackByte == CTRL_RR0 || ackByte == CTRL_RR1) {
                         int Nr = (ackByte == CTRL_RR0) ? 0 : 1;
-                        if (Nr == Ns) { // Valid acknowledgment
+                        if (Nr == Ns) {
                             ackState = RCV_STOP;
                             printf("[INFO] Acknowledgment (RR) received, transmission confirmed\n");
                             free(frame);
-                            Ns = (Ns + 1) % 2; // Toggle Ns only after RR
+                            Ns = (Ns + 1) % 2;
                             return bufSize;
                         }
                     } else if (ackByte == CTRL_REJ0 || ackByte == CTRL_REJ1) {
                         printf("[WARN] REJ received, resending frame without toggling sequence\n");
-                        ackState = START;  // Reset state machine
+                        ackState = START;
                         break;
                     } else if (ackByte == FLAG) {
                         ackState = FLAG_RCV;
@@ -394,7 +387,7 @@ int llwrite(const unsigned char *buf, int bufSize) {
             }
         }
 
-        if (ackState == RCV_STOP) break; // Break the retry loop if acknowledgment was received
+        if (ackState == RCV_STOP) break;
 
         if (retries >= MAX_RETRIES) {
             printf("[ERROR] Failed to get acknowledgment after maximum retries\n");
@@ -496,15 +489,15 @@ int llread(unsigned char *packet) {
                         introduceErrors(frame, frameIndex, HEADER_ERR_PROB, DATA_ERR_PROB);
                         if (expectedSequence == ((frame[2] & 0x80) ? 1 : 0)) {
                             state = RCV_STOP;
-                            sendRR(); // Send acknowledgment
+                            sendRR();
                             printf("[INFO] Frame successfully received\n");
                             
                             expectedSequence = (expectedSequence + 1) % 2;
                             totalBytesReceived += bytesRead;
                         } else {
-                            sendREJ(); // Send rejection for unexpected sequence
+                            sendREJ();
                             printf("[ERROR] Unexpected sequence number. Expected: %d, Received: %d\n", expectedSequence, frame[2] & 0x80 ? 1 : 0);
-                            state = START; // Restart for next frame
+                            state = START;
                         }
                     } else {
                         sendREJ();
@@ -704,7 +697,6 @@ int llclose(int showStatistics) {
         }
     }
 
-    // Close serial port
     int clstat = closeSerialPort();
     if (clstat != -1) {
         printf("[INFO] connection closed.\n");
@@ -713,7 +705,6 @@ int llclose(int showStatistics) {
 
     if (showStatistics) {
         printf("[INFO] Statistics:\n");
-        // Pôr aqui as estatísticas
     }
     return clstat;
 }

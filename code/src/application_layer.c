@@ -14,19 +14,19 @@
 #define MAX_DATA_SIZE 256
 #define NUM_RUNS 1
 
-extern double HEADER_ERR_PROB;  // Header error probability
-extern double DATA_ERR_PROB;    // Data error probability
+extern double HEADER_ERR_PROB;
+extern double DATA_ERR_PROB; 
 extern int PROP_DELAY_MS;
 
 int totalBytesSent = 0;
-int totalBytesReceived = 0;  // Track total bytes received by rx
+int totalBytesReceived = 0;
 // Calculate received bitrate
 double calculateReceivedBitrate(int totalBytesSent, double transmissionTime) {
-    int totalBitsSent = totalBytesSent * 8;  // Convert bytes to bits
+    int totalBitsSent = totalBytesSent * 8;
     return totalBitsSent / transmissionTime;
 }
 
-// Function to calculate the average
+
 double calculateAverage(double* data, int num_elements) {
     double sum = 0.0;
     for (int i = 0; i < num_elements; i++) {
@@ -35,7 +35,7 @@ double calculateAverage(double* data, int num_elements) {
     return sum / num_elements;
 }
 
-// Function to calculate the standard deviation
+
 double calculateStdDev(double* data, int num_elements, double mean) {
     double sum = 0.0;
     for (int i = 0; i < num_elements; i++) {
@@ -44,7 +44,7 @@ double calculateStdDev(double* data, int num_elements, double mean) {
     return sqrt(sum / num_elements);
 }
 
-// Function to get the current time in seconds
+
 double getCurrentTime() {
     struct timespec spec;
     clock_gettime(CLOCK_REALTIME, &spec);
@@ -59,10 +59,9 @@ double calculateEfficiency(int totalDataBytesSent, int baudRate, double transmis
         return 0.0;
     }
 
-    int totalBitsSent = totalDataBytesSent * 8;  // Convert bytes to bits
+    int totalBitsSent = totalDataBytesSent * 8; 
     double sentBitrate = (double)totalBitsSent / transmissionTime;
 
-    // Debug print statements to trace values
     printf("[DEBUG] Total Bits Sent: %d\n", totalBitsSent);
     printf("[DEBUG] Transmission Time: %f seconds\n", transmissionTime);
     printf("[DEBUG] Sent Bitrate (R): %f bps\n", sentBitrate);
@@ -150,7 +149,7 @@ void sendFile(const char* filename) {
     unsigned char* startPacket = createControlPacket(PACKET_START, fileSize, filename, &packetSize);
     
     struct timespec startTime, endTime;
-    clock_gettime(CLOCK_MONOTONIC, &startTime);  // Start timing
+    clock_gettime(CLOCK_MONOTONIC, &startTime);
 
     llwrite(startPacket, packetSize);
     free(startPacket);
@@ -176,10 +175,10 @@ void sendFile(const char* filename) {
     free(endPacket);
     free(fileData);
 
-    clock_gettime(CLOCK_MONOTONIC, &endTime);  // End timing
+    clock_gettime(CLOCK_MONOTONIC, &endTime);
     double transmissionTime = (endTime.tv_sec - startTime.tv_sec) + (endTime.tv_nsec - startTime.tv_nsec) / 1e9;
 
-    calculateEfficiency(bytesSent, /*baudRate=*/9600, transmissionTime);  // Adjust baud rate to match your setup
+    calculateEfficiency(bytesSent, /*baudRate=*/9600, transmissionTime);
     printf("[INFO] File transmission completed: %s\n", filename);
 }
 
