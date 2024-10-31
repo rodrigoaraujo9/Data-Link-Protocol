@@ -11,6 +11,21 @@
 #define PACKET_DATA 0x01
 #define MAX_DATA_SIZE 256
 
+double calculateEfficiency(int totalDataBytesReceived, int baudRate, double transmissionTime) {
+    if (baudRate == 0 || transmissionTime <= 0) {
+        printf("[ERROR] Invalid parameters for efficiency calculation. Baud rate or transmission time is zero.\n");
+        return 0.0;
+    }
+
+    int totalBitsReceived = totalDataBytesReceived * 8;  // Convert bytes to bits
+    double receivedBitrate = (double)totalBitsReceived / transmissionTime;
+    double efficiency = receivedBitrate / baudRate;
+
+    printf("[INFO] Efficiency (S) = %.6f, Transmission Time = %.6f seconds\n", efficiency, transmissionTime);
+    return efficiency;
+}
+
+
 unsigned char* readFile(const char* filename, int* fileSize) {
     FILE* file = fopen(filename, "rb");
     if (!file) {
@@ -80,12 +95,14 @@ unsigned char* createControlPacket(int type, int fileSize, const char* filename,
 void sendFile(const char* filename) {
     int fileSize = 0;
     unsigned char* fileData = readFile(filename, &fileSize);
-    if (!fileData) {
-        return; 
-    }
+    if (!fileData) return; 
 
     int packetSize;
     unsigned char* startPacket = createControlPacket(PACKET_START, fileSize, filename, &packetSize);
+    
+    struct timespec startTime, endTime;
+    clock_gettime(CLOCK_MONOTONIC, &startTime);  // Start timing
+
     llwrite(startPacket, packetSize);
     free(startPacket);
 
@@ -110,17 +127,17 @@ void sendFile(const char* filename) {
     free(endPacket);
     free(fileData);
 
+    clock_gettime(CLOCK_MONOTONIC, &endTime);  // End timing
+    double transmissionTime = (endTime.tv_sec - startTime.tv_sec) + (endTime.tv_nsec - startTime.tv_nsec) / 1e9;
+
+    calculateEfficiency(bytesSent, /*baudRate=*/9600, transmissionTime);  // Adjust baud rate to match your setup
     printf("[INFO] File transmission completed: %s\n", filename);
 }
 
 
 
 // Helper function to calculate efficiency
-double calculateEfficiency(int totalBitsReceived, double transmissionTime, int linkCapacity) {
-    double receivedBitrate = totalBitsReceived / transmissionTime; // bits per second
-    double efficiency = receivedBitrate / linkCapacity;
-    return efficiency;
-}
+
 
 void receiveFile(const char* filename) {
     unsigned char buffer[512];
@@ -128,9 +145,6 @@ void receiveFile(const char* filename) {
     unsigned char* fileData = NULL;
     int bytesReceived = 0;
     int expectedSeq = 0;
-
-    clock_t startTime, endTime;  // For measuring time
-    startTime = clock();         // Start time at the beginning of file reception
 
     int receiving = 1;
     while (receiving) {
@@ -196,16 +210,6 @@ void receiveFile(const char* filename) {
             receiving = 0;
         }
     }
-
-    endTime = clock(); // End time at the completion of the file reception
-
-    // Calculate transmission time and efficiency
-    double transmissionTime = (double)(endTime - startTime) / CLOCKS_PER_SEC; // in seconds
-    int totalBitsReceived = bytesReceived * 8; // Convert bytes to bits
-    int linkCapacity = 9600; // Example link capacity in bps; adjust if needed
-
-    double efficiency = calculateEfficiency(totalBitsReceived, transmissionTime, linkCapacity);
-    printf("[INFO] Efficiency (S) = %f, Transmission Time = %f seconds\n", efficiency, transmissionTime);
 
     free(fileData);
 }

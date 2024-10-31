@@ -20,7 +20,7 @@
 #define CTRL_DISC 0x0B
 #define BCC1(addr, ctrl) ((addr) ^ (ctrl))
 #define MAX_RETRIES 10
-#define TIMEOUT_SECONDS 5
+#define TIMEOUT_SECONDS 3
 #define READ_RETRIES 5
 #define ERR_MAX_RETRIES_EXCEEDED -2
 #define ERR_WRITE_FAILED -3
@@ -28,9 +28,9 @@
 #define ERR_INVALID_BCC -5
 #define ERR_FRAME_REJECTED -6
 #define ERR_WRITE_TIMEOUT -7
-#define HEADER_ERR_PROB 0.2
-#define DATA_ERR_PROB  0.2
-#define PROP_DELAY_MS 100
+#define HEADER_ERR_PROB 0.7
+#define DATA_ERR_PROB  0.6
+#define PROP_DELAY_MS 300
 
 enum StateSND {SEND_SET, WAIT_UA, SND_STOP};
 enum StateRCV {START, FLAG_RCV, A_RCV, C_RCV, BCC_OK, RCV_STOP};
