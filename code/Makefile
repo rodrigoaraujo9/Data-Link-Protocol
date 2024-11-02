@@ -13,6 +13,7 @@ CABLE_DIR = cable/
 TX_SERIAL_PORT = /dev/pts/0   # Use the correct pts
 RX_SERIAL_PORT = /dev/pts/1   # Use the correct pts
 
+
 BAUD_RATE = 9600
 
 TX_FILE = penguin.gif
@@ -23,7 +24,7 @@ RX_FILE = penguin-received.gif
 all: $(BIN)/main $(BIN)/cable
 
 $(BIN)/main: main.c $(SRC)/*.c
-	$(CC) $(CFLAGS) -o $@ $^ -I$(INCLUDE) -lm  # Link with the math library
+	$(CC) $(CFLAGS) -o $@ $^ -I$(INCLUDE) 
 
 $(BIN)/cable: $(CABLE_DIR)/cable.c
 	$(CC) $(CFLAGS) -o $@ $^
