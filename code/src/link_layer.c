@@ -43,6 +43,10 @@ LinkLayerRole role;
 int baudRate;
 int transmissions;
 
+int serialPortOpen = 1;
+
+
+
 void handle_alarm(int sig) {
     alarmTriggered = 1;
     alarmCount++;
@@ -75,6 +79,8 @@ int llopen(LinkLayer connectionParams) {
         return -1;
     }
 
+    printf("[INFO] Serial port opened successfully: %s\n", connectionParams.serialPort);
+
     resetPortState();
 
     if (connectionParams.role == LlTx) {
@@ -82,12 +88,20 @@ int llopen(LinkLayer connectionParams) {
         int retry = 0;
 
         while (retry < connectionParams.nRetransmissions) {
+            printf("[INFO] Sending SET frame, attempt %d\n", retry + 1);
             if (writeBytesSerialPort(setFrame, sizeof(setFrame)) < 0) {
-                printf("[ERROR] Failed to send SET frame.\n");
+                printf("[ERROR] Failed to send SET frame. Reinitializing serial port.\n");
+                closeSerialPort();
+                if (openSerialPort(connectionParams.serialPort, connectionParams.baudRate) < 0) {
+                    printf("[ERROR] Failed to reopen serial port: %s\n", connectionParams.serialPort);
+                    return -1;
+                }
                 resetPortState();
-                return ERR_WRITE_FAILED;
+                retry++;
+                continue;
             }
-            printf("[INFO] Sent SET frame, waiting for UA...\n");
+
+            printf("[INFO] Sent SET frame, waiting for UA response...\n");
             alarmTriggered = 0;
             alarm(connectionParams.timeout);
             unsigned char byte;
@@ -95,17 +109,21 @@ int llopen(LinkLayer connectionParams) {
 
             while (!alarmTriggered && state != RCV_STOP) {
                 int res = readByteSerialPort(&byte);
-                if (res <= 0 && alarmTriggered) {
-                    retry++;
-                    if (retry >= connectionParams.nRetransmissions) {
-                        printf("[ERROR] Maximum retries reached.\n");
-                        alarm(0);
-                        resetPortState();
-                        return ERR_MAX_RETRIES_EXCEEDED;
+                if (res <= 0) {
+                    if (alarmTriggered) {
+                        printf("[WARN] Timeout waiting for UA. Retrying...\n");
+                        retry++;
+                        if (retry >= connectionParams.nRetransmissions) {
+                            printf("[ERROR] Maximum retries reached. Connection failed.\n");
+                            resetPortState();
+                            return ERR_MAX_RETRIES_EXCEEDED;
+                        }
+                        break;
                     }
-                    break;
+                    continue;
                 }
 
+                printf("[DEBUG] Read byte: 0x%02X\n", byte);
                 switch (state) {
                     case START:
                         if (byte == FLAG) state = FLAG_RCV;
@@ -134,66 +152,86 @@ int llopen(LinkLayer connectionParams) {
             }
 
             if (state == RCV_STOP) {
-                printf("[INFO] UA frame received, connection established.\n");
+                printf("[INFO] UA frame received, connection established successfully.\n");
                 alarm(0);
                 return 1;
             }
         }
     } else if (connectionParams.role == LlRx) {
-        alarmTriggered = 0;
-        alarm(connectionParams.timeout);
-        enum StateRCV state = START;
-        unsigned char byte;
+        int retry = 0;
+        while (retry < connectionParams.nRetransmissions) {
+            printf("[INFO] Waiting for SET frame, attempt %d\n", retry + 1);
+            alarmTriggered = 0;
+            alarm(connectionParams.timeout);
+            enum StateRCV state = START;
+            unsigned char byte;
 
-        while (state != RCV_STOP) {
-            int res = readByteSerialPort(&byte);
-            if (res <= 0) {
-                if (alarmTriggered) {
-                    printf("[ERROR] Timeout while waiting for SET frame.\n");
-                    resetPortState();
-                    return ERR_READ_TIMEOUT;
+            while (state != RCV_STOP && !alarmTriggered) {
+                int res = readByteSerialPort(&byte);
+                if (res <= 0) {
+                    if (alarmTriggered) {
+                        printf("[WARN] Timeout while waiting for SET frame. Retrying...\n");
+                        retry++;
+                        if (retry >= connectionParams.nRetransmissions) {
+                            printf("[ERROR] Maximum retries reached. Connection failed.\n");
+                            resetPortState();
+                            return ERR_READ_TIMEOUT;
+                        }
+                        break;
+                    }
+                    continue;
                 }
-                continue;
+
+                printf("[DEBUG] Read byte: 0x%02X\n", byte);
+                switch (state) {
+                    case START:
+                        if (byte == FLAG) state = FLAG_RCV;
+                        break;
+                    case FLAG_RCV:
+                        if (byte == ADDR_TX_COMMAND) state = A_RCV;
+                        else if (byte != FLAG) state = START;
+                        break;
+                    case A_RCV:
+                        if (byte == CTRL_SET) state = C_RCV;
+                        else if (byte == FLAG) state = FLAG_RCV;
+                        else state = START;
+                        break;
+                    case C_RCV:
+                        if (byte == BCC1(ADDR_TX_COMMAND, CTRL_SET)) state = BCC_OK;
+                        else if (byte == FLAG) state = FLAG_RCV;
+                        else state = START;
+                        break;
+                    case BCC_OK:
+                        if (byte == FLAG) state = RCV_STOP;
+                        else state = START;
+                        break;
+                    default:
+                        break;
+                }
             }
 
-            switch (state) {
-                case START:
-                    if (byte == FLAG) state = FLAG_RCV;
-                    break;
-                case FLAG_RCV:
-                    if (byte == ADDR_TX_COMMAND) state = A_RCV;
-                    else if (byte != FLAG) state = START;
-                    break;
-                case A_RCV:
-                    if (byte == CTRL_SET) state = C_RCV;
-                    else if (byte == FLAG) state = FLAG_RCV;
-                    else state = START;
-                    break;
-                case C_RCV:
-                    if (byte == BCC1(ADDR_TX_COMMAND, CTRL_SET)) state = BCC_OK;
-                    else if (byte == FLAG) state = FLAG_RCV;
-                    else state = START;
-                    break;
-                case BCC_OK:
-                    if (byte == FLAG) state = RCV_STOP;
-                    else state = START;
-                    break;
-                default:
-                    break;
+            if (state == RCV_STOP) {
+                unsigned char uaFrame[5] = {FLAG, ADDR_RX_COMMAND, CTRL_UA, BCC1(ADDR_RX_COMMAND, CTRL_UA), FLAG};
+                if (writeBytesSerialPort(uaFrame, sizeof(uaFrame)) < 0) {
+                    printf("[ERROR] Failed to send UA frame. Reinitializing serial port.\n");
+                    closeSerialPort();
+                    if (openSerialPort(connectionParams.serialPort, connectionParams.baudRate) < 0) {
+                        printf("[ERROR] Failed to reopen serial port: %s\n", connectionParams.serialPort);
+                        return -1;
+                    }
+                    resetPortState();
+                    retry++;
+                    continue;
+                }
+
+                printf("[INFO] UA frame sent. Connection established.\n");
+                return 1;
             }
         }
-
-        unsigned char uaFrame[5] = {FLAG, ADDR_RX_COMMAND, CTRL_UA, BCC1(ADDR_RX_COMMAND, CTRL_UA), FLAG};
-        if (writeBytesSerialPort(uaFrame, sizeof(uaFrame)) < 0) {
-            printf("[ERROR] Failed to send UA frame.\n");
-            resetPortState();
-            return ERR_WRITE_FAILED;
-        }
-
-        printf("[INFO] UA frame sent.\n");
     }
 
-    return 1;
+    printf("[ERROR] Connection could not be established after maximum retries.\n");
+    return ERR_MAX_RETRIES_EXCEEDED;
 }
 
 int llwrite(const unsigned char *buf, int bufSize) {
