@@ -11,9 +11,7 @@
 #define PACKET_START 0x02
 #define PACKET_END 0x03
 #define PACKET_DATA 0x01
-#define MAX_DATA_SIZE 256
-#define NUM_RUNS 2
-
+#define MAX_DATA_SIZE 1000 // You can modify this value to change the chunk size globally.
 
 double transmissionStartTime = 0.0;
 double transmissionEndTime = 0.0;
@@ -21,38 +19,9 @@ double transmissionEndTime = 0.0;
 int totalBytesSent = 0;
 int totalBytesReceived = 0;
 
-
 double calculateReceivedBitrate(int totalBytes, double transmissionTime) {
     int totalBits = totalBytes * 8;
     return totalBits / transmissionTime;
-}
-
-double calculateAverage(double* data, int num_elements) {
-    double sum = 0.0;
-    for (int i = 0; i < num_elements; i++) {
-        sum += data[i];
-    }
-    return sum / num_elements;
-}
-
-
-double sqrtApproximation(double number) {
-    double guess = number / 2.0;
-    double epsilon = 0.00001;
-    while ((guess * guess) - number > epsilon || number - (guess * guess) > epsilon) {
-        guess = (guess + (number / guess)) / 2.0;
-    }
-    return guess;
-}
-
-
-double calculateStdDev(double* data, int num_elements, double mean) {
-    double sum = 0.0;
-    for (int i = 0; i < num_elements; i++) {
-        double deviation = data[i] - mean;
-        sum += deviation * deviation; // Replace pow with direct multiplication
-    }
-    return sqrtApproximation(sum / num_elements); // Replace sqrt with the approximation function
 }
 
 double getCurrentTime() {
@@ -65,7 +34,6 @@ double calculateEfficiency(int totalBytes, int baudRate, double transmissionTime
     int totalBits = totalBytes * 8;
     double sentBitrate = (double)totalBits / transmissionTime;
     return sentBitrate / baudRate;
-
 }
 
 unsigned char* readFile(const char* filename, int* fileSize) {
@@ -120,11 +88,12 @@ unsigned char* createControlPacket(int type, int fileSize, const char* filename,
 void sendFile(const char* filename) {
     int fileSize = 0;
     unsigned char* fileData = readFile(filename, &fileSize);
-    if (!fileData) return; 
+    if (!fileData) return;
 
+    int chunkSize = MAX_DATA_SIZE; // Set the chunk size based on the global MAX_DATA_SIZE.
     int packetSize;
     unsigned char* startPacket = createControlPacket(PACKET_START, fileSize, filename, &packetSize);
-    
+
     struct timespec startTime, endTime;
     clock_gettime(CLOCK_MONOTONIC, &startTime);
 
@@ -132,14 +101,15 @@ void sendFile(const char* filename) {
     free(startPacket);
 
     int bytesSent = 0;
-    unsigned char dataPacket[MAX_DATA_SIZE + 4];
+    unsigned char* dataPacket = (unsigned char*)malloc(chunkSize + 4);
     int seq = 0;
+
     while (bytesSent < fileSize) {
-        int dataSize = (fileSize - bytesSent > MAX_DATA_SIZE) ? MAX_DATA_SIZE : fileSize - bytesSent;
+        int dataSize = (fileSize - bytesSent > chunkSize) ? chunkSize : fileSize - bytesSent;
         dataPacket[0] = PACKET_DATA;
         dataPacket[1] = seq % 256;
-        dataPacket[2] = (dataSize >> 8) & 0xFF; 
-        dataPacket[3] = dataSize & 0xFF; 
+        dataPacket[2] = (dataSize >> 8) & 0xFF;
+        dataPacket[3] = dataSize & 0xFF;
         memcpy(&dataPacket[4], &fileData[bytesSent], dataSize);
 
         llwrite(dataPacket, dataSize + 4);
@@ -150,6 +120,7 @@ void sendFile(const char* filename) {
     unsigned char* endPacket = createControlPacket(PACKET_END, fileSize, filename, &packetSize);
     llwrite(endPacket, packetSize);
     free(endPacket);
+    free(dataPacket);
     free(fileData);
 
     clock_gettime(CLOCK_MONOTONIC, &endTime);
@@ -157,11 +128,11 @@ void sendFile(const char* filename) {
 
     double efficiency = calculateEfficiency(bytesSent, 9600, transmissionTime);
     printf("[INFO] Transmission Efficiency: %.2f, Time: %.2f seconds\n", efficiency, transmissionTime);
-
 }
 
 void receiveFile(const char* filename) {
-    unsigned char buffer[512];
+    int chunkSize = MAX_DATA_SIZE; // Set the chunk size based on the global MAX_DATA_SIZE.
+    unsigned char* buffer = (unsigned char*)malloc(chunkSize + 4);
     int fileSize = 0;
     unsigned char* fileData = NULL;
     int totalBytesReceived = 0;
@@ -179,18 +150,27 @@ void receiveFile(const char* filename) {
         if (packetType == PACKET_START) {
             fileSize = (buffer[3] << 24) | (buffer[4] << 16) | (buffer[5] << 8) | buffer[6];
             fileData = (unsigned char*)malloc(fileSize);
-            if (!fileData) return;
+            if (!fileData) {
+                free(buffer);
+                return;
+            }
         } else if (packetType == PACKET_DATA) {
             int seq = buffer[1];
             int dataSize = (buffer[2] << 8) | buffer[3];
-            if (seq != expectedSeq) return;
+            if (seq != expectedSeq) {
+                free(buffer);
+                return;
+            }
 
             memcpy(&fileData[bytesReceived], &buffer[4], dataSize);
             bytesReceived += dataSize;
             totalBytesReceived += dataSize;
             expectedSeq = (expectedSeq + 1) % 256;
         } else if (packetType == PACKET_END) {
-            if (bytesReceived != fileSize) return;
+            if (bytesReceived != fileSize) {
+                free(buffer);
+                return;
+            }
 
             struct stat st = {0};
             if (stat("/output", &st) == -1) mkdir("/output", 0700);
@@ -202,11 +182,13 @@ void receiveFile(const char* filename) {
     }
 
     free(fileData);
+    free(buffer);
     double endTime = getCurrentTime();
     double transmissionTime = endTime - startTime;
     double efficiency = calculateEfficiency(totalBytesReceived, 9600, transmissionTime);
     printf("[INFO] Reception Efficiency: %.2f, Time: %.2f seconds\n", efficiency, transmissionTime);
 }
+
 void applicationLayer(const char* serialPort, const char* role, int baudRate, int nTries, int timeout, const char* filename) {
     LinkLayer connectionParams;
     strncpy(connectionParams.serialPort, serialPort, sizeof(connectionParams.serialPort) - 1);
@@ -215,7 +197,7 @@ void applicationLayer(const char* serialPort, const char* role, int baudRate, in
     connectionParams.nRetransmissions = nTries;
     connectionParams.timeout = timeout;
 
-    printf("\n[INFO] Running transmission test...\n");
+    printf("\n[INFO] Running transmission test with chunk size: %d bytes...\n", MAX_DATA_SIZE);
 
     totalBytesSent = 0;
     totalBytesReceived = 0;
