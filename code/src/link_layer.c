@@ -35,8 +35,8 @@ extern int totalBytesReceived;
 extern double transmissionStartTime;
 extern double transmissionEndTime;
 
-double HEADER_ERR_PROB = 0.1;
-double DATA_ERR_PROB = 0.1;
+double HEADER_ERR_PROB = 0.0;
+double DATA_ERR_PROB = 0.0;
 int PROP_DELAY_MS = 0;
 volatile int alarmTriggered = FALSE;
 int alarmCount = 0;
@@ -105,7 +105,6 @@ int llopen(LinkLayer connectionParams) {
             alarm(connectionParams.timeout);
             unsigned char byte;
             enum StateRCV state = START;
-            int bytesRead = 0;
 
             while (!alarmTriggered && state != RCV_STOP) {
                 int res = readByteSerialPort(&byte);
@@ -469,117 +468,149 @@ void sendDISC() {
     writeBytesSerialPort(discFrame, sizeof(discFrame));
 }
 
+enum StateRCV processStateForDISC(enum StateRCV state, unsigned char byte) {
+    switch (state) {
+        case START:
+            return (byte == FLAG) ? FLAG_RCV : START;
+        case FLAG_RCV:
+            return (byte == ADDR_RX_COMMAND) ? A_RCV : (byte == FLAG ? FLAG_RCV : START);
+        case A_RCV:
+            return (byte == CTRL_DISC) ? C_RCV : (byte == FLAG ? FLAG_RCV : START);
+        case C_RCV:
+            return (byte == BCC1(ADDR_RX_COMMAND, CTRL_DISC)) ? BCC_OK : (byte == FLAG ? FLAG_RCV : START);
+        case BCC_OK:
+            return (byte == FLAG) ? RCV_STOP : START;
+        default:
+            return START;
+    }
+}
+
+enum StateRCV processStateForUA(enum StateRCV state, unsigned char byte) {
+    switch (state) {
+        case START:
+            return (byte == FLAG) ? FLAG_RCV : START;
+        case FLAG_RCV:
+            return (byte == ADDR_TX_COMMAND) ? A_RCV : (byte == FLAG ? FLAG_RCV : START);
+        case A_RCV:
+            return (byte == CTRL_UA) ? C_RCV : (byte == FLAG ? FLAG_RCV : START);
+        case C_RCV:
+            return (byte == BCC1(ADDR_TX_COMMAND, CTRL_UA)) ? BCC_OK : (byte == FLAG ? FLAG_RCV : START);
+        case BCC_OK:
+            return (byte == FLAG) ? RCV_STOP : START;
+        default:
+            return START;
+    }
+}
+
 int llclose(int showStatistics) {
+    unsigned char byte;
+    enum StateRCV state = START;
+    int retries = 0;
+    int clstat = 0;  // Initialize with a success state
+
     if (role == LlTx) {
-        int retries = 0;
+        // Transmitter logic for closing
         while (retries < transmissions) {
             sendDISC();
             printf("[INFO] DISC packet from transmitter sent.\n");
             printf("[INFO] Waiting for DISC from receiver...\n");
 
-            unsigned char byte;
-            enum StateRCV state = START;
-            alarm(1);
-            while (state != RCV_STOP) {
+            alarmTriggered = 0;
+            alarm(timeout);
+
+            while (state != RCV_STOP && !alarmTriggered) {
                 int res = readByteSerialPort(&byte);
                 if (res <= 0) {
-                    sleep(1);
-                    printf("[ERROR] Timeout while waiting for DISC frame\n");
-                    retries++;
-                    if (retries >= transmissions) {
-                        printf("[ERROR] Maximum retries exceeded while waiting for DISC frame\n");
-                        return ERR_MAX_RETRIES_EXCEEDED;
+                    if (alarmTriggered) {
+                        retries++;
+                        printf("[ERROR] Timeout while waiting for DISC frame\n");
+                        if (retries >= transmissions) {
+                            printf("[ERROR] Maximum retries exceeded while waiting for DISC frame\n");
+                            goto cleanup;
+                        }
+                        printf("[WARN] Retrying sending DISC...\n");
+                        alarm(timeout);
+                        break;
                     }
-                    printf("[WARN] Retrying sending DISC...\n");
-                    break;
+                    continue;
                 }
 
-                switch (state) {
-                    case START:
-                        if (byte == FLAG) state = FLAG_RCV;
-                        break;
-                    case FLAG_RCV:
-                        if (byte == ADDR_RX_COMMAND) state = A_RCV;
-                        else if (byte != FLAG) state = START;
-                        break;
-                    case A_RCV:
-                        if (byte == CTRL_DISC) state = C_RCV;
-                        else if (byte == FLAG) state = FLAG_RCV;
-                        else state = START;
-                        break;
-                    case C_RCV:
-                        if (byte == BCC1(ADDR_RX_COMMAND, CTRL_DISC)) state = BCC_OK;
-                        else if (byte == FLAG) state = FLAG_RCV;
-                        else state = START;
-                        break;
-                    case BCC_OK:
-                        if (byte == FLAG) state = RCV_STOP;
-                        break;
-                    default:
-                        break;
-                }
+                state = processStateForDISC(state, byte);
             }
 
             if (state == RCV_STOP) break;
         }
 
-        unsigned char uaFrame[5] = {FLAG, ADDR_TX_COMMAND, CTRL_UA, 0x00, FLAG};
-        uaFrame[3] = BCC1(uaFrame[1], uaFrame[2]);
-
+        // Send UA to confirm closure
+        unsigned char uaFrame[5] = {FLAG, ADDR_TX_COMMAND, CTRL_UA, BCC1(ADDR_TX_COMMAND, CTRL_UA), FLAG};
         if (writeBytesSerialPort(uaFrame, sizeof(uaFrame)) < 0) {
             printf("[ERROR] Failed to send UA frame\n");
-            return ERR_WRITE_FAILED;
+            goto cleanup;
         }
         printf("[INFO] Sent UA frame to confirm connection closure\n");
-    } else if (role == LlRx) {
-        unsigned char byte;
-        enum StateRCV state = START;
 
-        while (state != RCV_STOP) {
+    } else if (role == LlRx) {
+        // Receiver logic for closing
+        alarmTriggered = 0;
+        alarm(timeout);
+
+        while (state != RCV_STOP && !alarmTriggered) {
             int res = readByteSerialPort(&byte);
             if (res <= 0) {
-                printf("[ERROR] Timeout while waiting for DISC frame\n");
-                return ERR_READ_TIMEOUT;
+                if (alarmTriggered) {
+                    printf("[ERROR] Timeout while waiting for DISC frame\n");
+                    goto cleanup;
+                }
+                continue;
             }
 
-            switch (state) {
-                case START:
-                    if (byte == FLAG) state = FLAG_RCV;
-                    break;
-                case FLAG_RCV:
-                    if (byte == ADDR_RX_COMMAND) state = A_RCV;
-                    else if (byte != FLAG) state = START;
-                    break;
-                case A_RCV:
-                    if (byte == CTRL_DISC) state = C_RCV;
-                    else if (byte == FLAG) state = FLAG_RCV;
-                    else state = START;
-                    break;
-                case C_RCV:
-                    if (byte == BCC1(ADDR_RX_COMMAND, CTRL_DISC)) state = BCC_OK;
-                    else if (byte == FLAG) state = FLAG_RCV;
-                    else state = START;
-                    break;
-                case BCC_OK:
-                    if (byte == FLAG) {
-                        state = RCV_STOP;
-                        sendDISC();
-                        printf("[INFO] DISC packet from receiver sent.\n");
-                    } else state = START;
-                    break;
-                default:
-                    break;
+            state = processStateForDISC(state, byte);
+        }
+
+        // Send DISC to confirm closure
+        sendDISC();
+        printf("[INFO] DISC packet from receiver sent.\n");
+
+        // Wait for UA from the transmitter
+        state = START;
+        alarmTriggered = 0;
+        alarm(timeout);
+
+        while (state != RCV_STOP && !alarmTriggered) {
+            int res = readByteSerialPort(&byte);
+            if (res <= 0) {
+                if (alarmTriggered) {
+                    printf("[ERROR] Timeout while waiting for UA frame\n");
+                    goto cleanup;
+                }
+                continue;
             }
+
+            state = processStateForUA(state, byte);
         }
     }
 
-    int clstat = closeSerialPort();
-    if (clstat != -1) {
-        printf("[INFO] connection closed.\n");
+cleanup:
+    // Flush the port to discard any remaining data before closing
+    printf("[INFO] Flushing the serial port before closure.\n");
+    while (readByteSerialPort(&byte) > 0) {
+        // Keep reading and discarding until no more data is available
+    }
+
+    clstat = closeSerialPort();
+    if (clstat == 0) {
+        printf("[INFO] Connection closed.\n");
+    } else {
+        printf("[ERROR] Failed to close the serial port properly.\n");
     }
 
     if (showStatistics) {
         printf("[INFO] Statistics:\n");
+        // Add detailed statistics if necessary
     }
+
     return clstat;
 }
+
+
+

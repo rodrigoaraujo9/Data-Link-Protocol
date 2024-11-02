@@ -6,14 +6,13 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
-#include <math.h>
 #include <sys/time.h>
 
 #define PACKET_START 0x02
 #define PACKET_END 0x03
 #define PACKET_DATA 0x01
 #define MAX_DATA_SIZE 256
-#define NUM_RUNS 1
+#define NUM_RUNS 2
 
 extern double HEADER_ERR_PROB;
 extern double DATA_ERR_PROB;
@@ -38,12 +37,22 @@ double calculateAverage(double* data, int num_elements) {
     return sum / num_elements;
 }
 
+double sqrtApproximation(double number) {
+    double guess = number / 2.0;
+    double epsilon = 0.00001;
+    while ((guess * guess) - number > epsilon || number - (guess * guess) > epsilon) {
+        guess = (guess + (number / guess)) / 2.0;
+    }
+    return guess;
+}
+
 double calculateStdDev(double* data, int num_elements, double mean) {
     double sum = 0.0;
     for (int i = 0; i < num_elements; i++) {
-        sum += pow(data[i] - mean, 2);
+        double deviation = data[i] - mean;
+        sum += deviation * deviation; // Replace pow with direct multiplication
     }
-    return sqrt(sum / num_elements);
+    return sqrtApproximation(sum / num_elements); // Replace sqrt with the approximation function
 }
 
 double getCurrentTime() {
@@ -208,7 +217,7 @@ void applicationLayer(const char* serialPort, const char* role, int baudRate, in
     double efficiencies[NUM_RUNS];
     double transmissionTimes[NUM_RUNS];
     double FERs[] = {0.0, 0.1};
-    int T_props[] = {100, 300};
+    int T_props[] = {0, 100};
     int numFERs = sizeof(FERs) / sizeof(FERs[0]);
     int numDelays = sizeof(T_props) / sizeof(T_props[0]);
 
