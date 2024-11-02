@@ -14,9 +14,6 @@
 #define MAX_DATA_SIZE 256
 #define NUM_RUNS 2
 
-extern double HEADER_ERR_PROB;
-extern double DATA_ERR_PROB;
-extern int PROP_DELAY_MS;
 
 double transmissionStartTime = 0.0;
 double transmissionEndTime = 0.0;
@@ -210,7 +207,6 @@ void receiveFile(const char* filename) {
     double efficiency = calculateEfficiency(totalBytesReceived, 9600, transmissionTime);
     printf("[INFO] Reception Efficiency: %.2f, Time: %.2f seconds\n", efficiency, transmissionTime);
 }
-
 void applicationLayer(const char* serialPort, const char* role, int baudRate, int nTries, int timeout, const char* filename) {
     LinkLayer connectionParams;
     strncpy(connectionParams.serialPort, serialPort, sizeof(connectionParams.serialPort) - 1);
@@ -219,63 +215,51 @@ void applicationLayer(const char* serialPort, const char* role, int baudRate, in
     connectionParams.nRetransmissions = nTries;
     connectionParams.timeout = timeout;
 
-    double efficiencies[NUM_RUNS];
-    double transmissionTimes[NUM_RUNS];
-    double FERs[] = {0.0, 0.1};
-    int T_props[] = {0, 100};
-    int numFERs = sizeof(FERs) / sizeof(FERs[0]);
-    int numDelays = sizeof(T_props) / sizeof(T_props[0]);
+    printf("\n[INFO] Running transmission test...\n");
 
-    for (int f = 0; f < numFERs; f++) {
-        for (int d = 0; d < numDelays; d++) {
-            HEADER_ERR_PROB = FERs[f];
-            DATA_ERR_PROB = FERs[f];
-            PROP_DELAY_MS = T_props[d];
+    totalBytesSent = 0;
+    totalBytesReceived = 0;
 
-            printf("\n[INFO] Testing FER=%.2f, T_prop=%d ms\n", FERs[f], T_props[d]);
-            for (int i = 0; i < NUM_RUNS; i++) {
-                totalBytesSent = 0;
-                totalBytesReceived = 0;
+    if (strcmp(role, "tx") == 0) {
+        connectionParams.role = LlTx;
+        if (llopen(connectionParams) < 0) {
+            printf("[ERROR] Failed to open link layer connection.\n");
+            return;
+        }
 
-                if (strcmp(role, "tx") == 0) {
-                    connectionParams.role = LlTx;
-                    if (llopen(connectionParams) < 0) return;
+        double startTime = getCurrentTime();
+        sendFile(filename);
+        double endTime = getCurrentTime();
 
-                    double startTime = getCurrentTime();
-                    sendFile(filename);
-                    double endTime = getCurrentTime();
+        double transmissionTime = endTime - startTime;
+        double efficiency = calculateReceivedBitrate(totalBytesSent, transmissionTime) / baudRate;
 
-                    double transmissionTime = endTime - startTime;
-                    transmissionTimes[i] = transmissionTime;
-                    efficiencies[i] = calculateReceivedBitrate(totalBytesSent, transmissionTime) / baudRate;
+        printf("[INFO] Transmission Efficiency: %f\n", efficiency);
+        printf("[INFO] Transmission Time: %f seconds\n", transmissionTime);
 
-                    if (llclose(1) < 0) printf("[ERROR] Failed to close the link layer connection.\n");
-                } else if (strcmp(role, "rx") == 0) {
-                    connectionParams.role = LlRx;
-                    if (llopen(connectionParams) < 0) return;
+        if (llclose(1) < 0) {
+            printf("[ERROR] Failed to close the link layer connection.\n");
+        }
 
-                    double startTime = getCurrentTime();
-                    receiveFile("received.gif");
-                    double endTime = getCurrentTime();
+    } else if (strcmp(role, "rx") == 0) {
+        connectionParams.role = LlRx;
+        if (llopen(connectionParams) < 0) {
+            printf("[ERROR] Failed to open link layer connection.\n");
+            return;
+        }
 
-                    double transmissionTime = endTime - startTime;
-                    transmissionTimes[i] = transmissionTime;
-                    efficiencies[i] = calculateReceivedBitrate(totalBytesReceived, transmissionTime) / baudRate;
+        double startTime = getCurrentTime();
+        receiveFile("received.gif");
+        double endTime = getCurrentTime();
 
-                    if (llclose(1) < 0) printf("[ERROR] Failed to close the link layer connection.\n");
-                }
-            }
+        double transmissionTime = endTime - startTime;
+        double efficiency = calculateReceivedBitrate(totalBytesReceived, transmissionTime) / baudRate;
 
-            double avgEfficiency = calculateAverage(efficiencies, NUM_RUNS);
-            double avgTransmissionTime = calculateAverage(transmissionTimes, NUM_RUNS);
-            double stdDevEfficiency = calculateStdDev(efficiencies, NUM_RUNS, avgEfficiency);
-            double stdDevTransmissionTime = calculateStdDev(transmissionTimes, NUM_RUNS, avgTransmissionTime);
+        printf("[INFO] Reception Efficiency: %f\n", efficiency);
+        printf("[INFO] Reception Time: %f seconds\n", transmissionTime);
 
-            printf("[INFO] Summary for FER=%.2f, T_prop=%d ms:\n", FERs[f], T_props[d]);
-            printf("Average Efficiency = %f\n", avgEfficiency);
-            printf("Standard Deviation of Efficiency = %f\n", stdDevEfficiency);
-            printf("Average Transmission Time = %f seconds\n", avgTransmissionTime);
-            printf("Standard Deviation of Transmission Time = %f seconds\n", stdDevTransmissionTime);
+        if (llclose(1) < 0) {
+            printf("[ERROR] Failed to close the link layer connection.\n");
         }
     }
 }

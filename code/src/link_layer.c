@@ -7,6 +7,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <sys/termios.h>
 #define _POSIX_SOURCE 1
 #define FLAG 0x7E
 #define ADDR_TX_COMMAND 0x03
@@ -35,9 +36,6 @@ extern int totalBytesReceived;
 extern double transmissionStartTime;
 extern double transmissionEndTime;
 
-double HEADER_ERR_PROB = 0.0;
-double DATA_ERR_PROB = 0.0;
-int PROP_DELAY_MS = 0;
 volatile int alarmTriggered = FALSE;
 int alarmCount = 0;
 int timeout;
@@ -52,25 +50,11 @@ void handle_alarm(int sig) {
     alarm(1);
 }
 
-void introduceErrors(unsigned char *frame, int frameSize, double headerErrorProb, double dataErrorProb) {
-    srand(time(NULL));
-    if ((double)rand() / RAND_MAX < headerErrorProb) {
-        frame[1] ^= 0xFF;
-        printf("[INFO] Header error introduced\n");
-    }
-    for (int i = 4; i < frameSize - 2; i++) {
-        if ((double)rand() / RAND_MAX < dataErrorProb) {
-            frame[i] ^= 0xFF;
-            printf("[INFO] Data error introduced at byte %d\n", i);
-        }
-    }
-}
-
-void applyPropagationDelay() {
-    if (PROP_DELAY_MS > 0) {
-        usleep(PROP_DELAY_MS * 1000);
-        printf("[INFO] Applied propagation delay of %d ms\n", PROP_DELAY_MS);
-    }
+void resetPortState() {
+    flushPort();
+    alarmCount = 0;
+    alarmTriggered = FALSE;
+    printf("[INFO] Port state reset: alarm count and trigger reset.\n");
 }
 
 int llopen(LinkLayer connectionParams) {
@@ -91,6 +75,8 @@ int llopen(LinkLayer connectionParams) {
         return -1;
     }
 
+    resetPortState();
+
     if (connectionParams.role == LlTx) {
         unsigned char setFrame[5] = {FLAG, ADDR_TX_COMMAND, CTRL_SET, BCC1(ADDR_TX_COMMAND, CTRL_SET), FLAG};
         int retry = 0;
@@ -98,6 +84,7 @@ int llopen(LinkLayer connectionParams) {
         while (retry < connectionParams.nRetransmissions) {
             if (writeBytesSerialPort(setFrame, sizeof(setFrame)) < 0) {
                 printf("[ERROR] Failed to send SET frame.\n");
+                resetPortState();
                 return ERR_WRITE_FAILED;
             }
             printf("[INFO] Sent SET frame, waiting for UA...\n");
@@ -113,6 +100,7 @@ int llopen(LinkLayer connectionParams) {
                     if (retry >= connectionParams.nRetransmissions) {
                         printf("[ERROR] Maximum retries reached.\n");
                         alarm(0);
+                        resetPortState();
                         return ERR_MAX_RETRIES_EXCEEDED;
                     }
                     break;
@@ -162,6 +150,7 @@ int llopen(LinkLayer connectionParams) {
             if (res <= 0) {
                 if (alarmTriggered) {
                     printf("[ERROR] Timeout while waiting for SET frame.\n");
+                    resetPortState();
                     return ERR_READ_TIMEOUT;
                 }
                 continue;
@@ -197,6 +186,7 @@ int llopen(LinkLayer connectionParams) {
         unsigned char uaFrame[5] = {FLAG, ADDR_RX_COMMAND, CTRL_UA, BCC1(ADDR_RX_COMMAND, CTRL_UA), FLAG};
         if (writeBytesSerialPort(uaFrame, sizeof(uaFrame)) < 0) {
             printf("[ERROR] Failed to send UA frame.\n");
+            resetPortState();
             return ERR_WRITE_FAILED;
         }
 
@@ -415,8 +405,6 @@ int llread(unsigned char *packet) {
             case BCC_OK:
                 if (byte == FLAG) {
                     if (bcc2 == 0) {
-                        applyPropagationDelay();
-                        introduceErrors(frame, frameIndex, HEADER_ERR_PROB, DATA_ERR_PROB);
                         if (expectedSequence == ((frame[2] & 0x80) ? 1 : 0)) {
                             state = RCV_STOP;
                             sendRR();
@@ -506,10 +494,9 @@ int llclose(int showStatistics) {
     unsigned char byte;
     enum StateRCV state = START;
     int retries = 0;
-    int clstat = 0;  // Initialize with a success state
+    int clstat = 0; 
 
     if (role == LlTx) {
-        // Transmitter logic for closing
         while (retries < transmissions) {
             sendDISC();
             printf("[INFO] DISC packet from transmitter sent.\n");
@@ -526,6 +513,7 @@ int llclose(int showStatistics) {
                         printf("[ERROR] Timeout while waiting for DISC frame\n");
                         if (retries >= transmissions) {
                             printf("[ERROR] Maximum retries exceeded while waiting for DISC frame\n");
+                            resetPortState();
                             goto cleanup;
                         }
                         printf("[WARN] Retrying sending DISC...\n");
@@ -541,16 +529,15 @@ int llclose(int showStatistics) {
             if (state == RCV_STOP) break;
         }
 
-        // Send UA to confirm closure
         unsigned char uaFrame[5] = {FLAG, ADDR_TX_COMMAND, CTRL_UA, BCC1(ADDR_TX_COMMAND, CTRL_UA), FLAG};
         if (writeBytesSerialPort(uaFrame, sizeof(uaFrame)) < 0) {
             printf("[ERROR] Failed to send UA frame\n");
+            resetPortState();
             goto cleanup;
         }
         printf("[INFO] Sent UA frame to confirm connection closure\n");
 
     } else if (role == LlRx) {
-        // Receiver logic for closing
         alarmTriggered = 0;
         alarm(timeout);
 
@@ -559,6 +546,7 @@ int llclose(int showStatistics) {
             if (res <= 0) {
                 if (alarmTriggered) {
                     printf("[ERROR] Timeout while waiting for DISC frame\n");
+                    resetPortState();
                     goto cleanup;
                 }
                 continue;
@@ -567,11 +555,9 @@ int llclose(int showStatistics) {
             state = processStateForDISC(state, byte);
         }
 
-        // Send DISC to confirm closure
         sendDISC();
         printf("[INFO] DISC packet from receiver sent.\n");
 
-        // Wait for UA from the transmitter
         state = START;
         alarmTriggered = 0;
         alarm(timeout);
@@ -581,6 +567,7 @@ int llclose(int showStatistics) {
             if (res <= 0) {
                 if (alarmTriggered) {
                     printf("[ERROR] Timeout while waiting for UA frame\n");
+                    resetPortState();
                     goto cleanup;
                 }
                 continue;
@@ -591,11 +578,9 @@ int llclose(int showStatistics) {
     }
 
 cleanup:
-    // Flush the port to discard any remaining data before closing
+
     printf("[INFO] Flushing the serial port before closure.\n");
-    while (readByteSerialPort(&byte) > 0) {
-        // Keep reading and discarding until no more data is available
-    }
+    flushPort();
 
     clstat = closeSerialPort();
     if (clstat == 0) {
@@ -606,11 +591,7 @@ cleanup:
 
     if (showStatistics) {
         printf("[INFO] Statistics:\n");
-        // Add detailed statistics if necessary
     }
 
     return clstat;
 }
-
-
-

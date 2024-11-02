@@ -139,3 +139,13 @@ int writeBytesSerialPort(const unsigned char *bytes, int numBytes)
 {
     return write(fd, bytes, numBytes);
 }
+
+void flushPort() {
+    if (fd >= 0) {
+        tcflush(fd, TCIOFLUSH);
+        printf("[INFO] Serial port flushed to clear buffer.\n");
+    } else {
+        printf("[WARN] Serial port not open; flush operation skipped.\n");
+    }
+}
+
