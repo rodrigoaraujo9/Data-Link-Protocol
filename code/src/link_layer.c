@@ -413,6 +413,7 @@ int llread(unsigned char *packet) {
                     } else {
                         sendREJ();
                         printf("[ERROR] BCC2 mismatch, frame rejected\n");
+                        return -1;
                     }
                 } else {
                     if (byte == 0x7D) {

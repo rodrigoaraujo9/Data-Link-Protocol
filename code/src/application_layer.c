@@ -24,6 +24,17 @@ double calculateReceivedBitrate(int totalBytes, double transmissionTime) {
     return totalBits / transmissionTime;
 }
 
+
+long getFileSize(const char* filename) {
+    struct stat fileStat;
+    if (stat(filename, &fileStat) != 0) {
+        printf("[ERROR] Could not retrieve file information for: %s\n", filename);
+        return -1; // Return -1 to indicate an error
+    }
+
+    return fileStat.st_size;
+}
+
 double getCurrentTime() {
     struct timespec spec;
     clock_gettime(CLOCK_REALTIME, &spec);
@@ -41,7 +52,7 @@ unsigned char* readFile(const char* filename, int* fileSize) {
     if (!file) return NULL;
 
     fseek(file, 0, SEEK_END);
-    *fileSize = ftell(file);
+    *fileSize = getFileSize(filename);
     fseek(file, 0, SEEK_SET);
 
     unsigned char* fileData = (unsigned char*)malloc(*fileSize);
