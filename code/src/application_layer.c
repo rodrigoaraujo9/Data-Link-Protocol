@@ -19,6 +19,9 @@ extern double HEADER_ERR_PROB;
 extern double DATA_ERR_PROB;
 extern int PROP_DELAY_MS;
 
+double transmissionStartTime = 0.0;
+double transmissionEndTime = 0.0;
+
 int totalBytesSent = 0;
 int totalBytesReceived = 0;
 
