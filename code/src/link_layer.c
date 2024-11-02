@@ -197,6 +197,7 @@ int llopen(LinkLayer connectionParams) {
 }
 
 int llwrite(const unsigned char *buf, int bufSize) {
+    alarmCount = 0;
     int overhead = 6;
     int maxFrameSize = bufSize * 2 + overhead;
     unsigned char *frame = (unsigned char*)malloc(maxFrameSize);
@@ -344,22 +345,14 @@ int llread(unsigned char *packet) {
     int frameIndex = 0;
     unsigned char bcc2 = 0;
     int bytesRead = 0;
-    int retries = 0;
     static int expectedSequence = 0;
 
     printf("[DEBUG] Starting llread\n");
 
-    while (state != RCV_STOP && retries < transmissions) {
+    while (state != RCV_STOP) {
         int res = readByteSerialPort(&byte);
 
-        if (res <= 0) {
-            printf("[ERROR] Read timeout (retry %d of %d)\n", retries + 1, transmissions);
-            retries++;
-            sleep(timeout);
-            continue;
-        }
 
-        retries = 0;
 
         switch (state) {
             case START:
@@ -415,6 +408,7 @@ int llread(unsigned char *packet) {
                             sendREJ();
                             printf("[ERROR] Unexpected sequence number. Expected: %d, Received: %d\n", expectedSequence, frame[2] & 0x80 ? 1 : 0);
                             state = START;
+                            return -1;
                         }
                     } else {
                         sendREJ();
@@ -437,10 +431,7 @@ int llread(unsigned char *packet) {
         }
     }
 
-    if (retries >= transmissions) {
-        printf("[ERROR] Maximum retries exceeded. Failed to receive the packet.\n");
-        return ERR_MAX_RETRIES_EXCEEDED;
-    }
+  
 
     printf("[INFO] Received %d bytes in the frame\n", bytesRead);
     return bytesRead;
