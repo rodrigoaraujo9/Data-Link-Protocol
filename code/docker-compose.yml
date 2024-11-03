@@ -27,8 +27,8 @@ services:
     container_name: transmitter
     command: /bin/bash -c 'while [ ! -e /dev/pts/1 ]; do sleep 0.2; done; ./bin/main /dev/pts/1 1800 tx penguin.gif'
     environment:
-      - BER=0.01  # Introduce byte error rate for testing noise
-      - PROP_DELAY=500000  # Propagation delay in microseconds
+      - BER=0.00  # Introduce byte error rate for testing noise
+      - PROP_DELAY=00000  # Propagation delay in microseconds
     volumes:
       - /dev/pts:/dev/pts  # Share the /dev/pts with the host for serial communication
       - ./output:/output  # Mount an output directory for accessing files
@@ -43,8 +43,8 @@ services:
     container_name: receiver
     command: /bin/bash -c 'while [ ! -e /dev/pts/2 ]; do sleep 0.2; done; ./bin/main /dev/pts/2 1800 rx penguin-received.gif'
     environment:
-      - BER=0.01  # Match the byte error rate for receiving
-      - PROP_DELAY=500000  # Propagation delay to align with the transmitter
+      - BER=0.00  # Match the byte error rate for receiving
+      - PROP_DELAY=00000  # Propagation delay to align with the transmitter
     volumes:
       - /dev/pts:/dev/pts  # Share the /dev/pts with the host for serial communication
       - ./output:/output  # Mount an output directory for accessing files

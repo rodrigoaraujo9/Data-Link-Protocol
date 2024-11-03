@@ -11,36 +11,19 @@
 #define PACKET_START 0x02
 #define PACKET_END 0x03
 #define PACKET_DATA 0x01
-#define MAX_DATA_SIZE 512 // You can modify this value to change the chunk size globally.
+#define MAX_DATA_SIZE 1000 //modify to change the chunk size
 
 extern double transmissionStartTime=0.0;
 extern double transmissionEndTime=0.0;
 
-extern int totalBytesSent;
-extern int totalBytesReceived;
+int totalBytesSent = 0;
+int totalBytesReceived = 0;
+
 
 double calculateReceivedBitrate(int totalBytes, double transmissionTime) {
     int totalBits = totalBytes * 8;
     return totalBits / transmissionTime;
 }
-
-#include "link_layer.h"
-#include "serial_port.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <time.h>
-#include <sys/time.h>
-
-#define PACKET_START 0x02
-#define PACKET_END 0x03
-#define PACKET_DATA 0x01
-#define MAX_DATA_SIZE 512
-
-int totalBytesSent = 0;
-int totalBytesReceived = 0;
 
 long getFileSize(const char* filename) {
     struct stat fileStat;
@@ -142,8 +125,10 @@ void sendFile(const char* filename) {
     free(fileData);
 }
 
-void receiveFile(const char* filename) {
-    unsigned char* buffer = (unsigned char*)malloc(MAX_DATA_SIZE + 4);
+void receiveFile(const char* filename, int baudRate) {
+    int chunkSize = MAX_DATA_SIZE; // Set the chunk size based on the global MAX_DATA_SIZE.
+    unsigned char* buffer = (unsigned char*)malloc(chunkSize + 4);
+    int fileSize = 0;
     int totalBytesReceived = 0;
     int expectedSeq = 0;
 
@@ -154,41 +139,53 @@ void receiveFile(const char* filename) {
         return;
     }
 
-    while (1) {
+    int receiving = 1;
+    double startTime = getCurrentTime();
+
+    while (receiving) {
         int packetSize = llread(buffer);
         if (packetSize < 0) {
-            printf("[ERROR] Packet read failed.\n");
+            printf("[ERROR] Failed to read packet.\n");
             continue;
         }
 
         unsigned char packetType = buffer[0];
         if (packetType == PACKET_START) {
-            int fileSize = (buffer[3] << 24) | (buffer[4] << 16) | (buffer[5] << 8) | buffer[6];
+            fileSize = (buffer[3] << 24) | (buffer[4] << 16) | (buffer[5] << 8) | buffer[6];
             printf("[INFO] Receiving file. Expected size: %d bytes.\n", fileSize);
         } else if (packetType == PACKET_DATA) {
             int seq = buffer[1];
             int dataSize = (buffer[2] << 8) | buffer[3];
 
-            if (seq == expectedSeq) {
-                fwrite(&buffer[4], 1, dataSize, file);
-                totalBytesReceived += dataSize;
-                expectedSeq = (expectedSeq + 1) % 256;
-                sendRR();
-            } else {
-                printf("[WARN] Sequence mismatch. Expected %d, received %d. Sending REJ.\n", expectedSeq, seq);
-                sendREJ();
+            if (seq != expectedSeq) {
+                printf("[WARN] Unexpected sequence number. Expected %d, received %d.\n", expectedSeq, seq);
+                continue;
             }
+
+            fwrite(&buffer[4], 1, dataSize, file);
+            totalBytesReceived += dataSize;
+            expectedSeq = (expectedSeq + 1) % 256;
         } else if (packetType == PACKET_END) {
-            printf("[INFO] File transfer complete. Total bytes received: %d\n", totalBytesReceived);
-            break;
+            if (totalBytesReceived != fileSize) {
+                printf("[ERROR] Incomplete file received. Expected %d bytes, but received %d bytes.\n", fileSize, totalBytesReceived);
+                fclose(file);
+                free(buffer);
+                return;
+            }
+
+            printf("[INFO] Successfully received the complete file.\n");
+            receiving = 0;
         }
     }
 
     fclose(file);
     free(buffer);
+
+    double endTime = getCurrentTime();
+    double transmissionTime = endTime - startTime;
+    double efficiency = calculateEfficiency(totalBytesReceived, baudRate, transmissionTime);
+    printf("[INFO] Reception Efficiency: %.2f, Time: %.2f seconds\n", efficiency, transmissionTime);
 }
-
-
 
 void applicationLayer(const char* serialPort, const char* role, int baudRate, int nTries, int timeout, const char* filename) {
     LinkLayer connectionParams;
@@ -232,7 +229,7 @@ void applicationLayer(const char* serialPort, const char* role, int baudRate, in
         }
 
         double startTime = getCurrentTime();
-        receiveFile(filename);
+        receiveFile(filename,baudRate);
         double endTime = getCurrentTime();
 
         double transmissionTime = endTime - startTime;

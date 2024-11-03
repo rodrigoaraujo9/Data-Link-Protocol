@@ -42,6 +42,7 @@ int timeout;
 LinkLayerRole role;
 int baudRate;
 int transmissions;
+static int expectedSequence = 0;
 
 int serialPortOpen = 1;
 
@@ -50,7 +51,6 @@ int serialPortOpen = 1;
 void handle_alarm(int sig) {
     alarmTriggered = 1;
     alarmCount++;
-    printf("[ALARM] Timeout occurred. Alarm count: %d seconds.\n", alarmCount);
     alarm(1);
 }
 
@@ -65,7 +65,7 @@ int llopen(LinkLayer connectionParams) {
     role = connectionParams.role;
     baudRate = connectionParams.baudRate;
     timeout = connectionParams.timeout;
-    transmissions = connectionParams.nRetransmissions+10;
+    transmissions = connectionParams.nRetransmissions;
     alarmCount = 0;
     alarmTriggered = FALSE;
     totalBytesSent = 0;
@@ -230,7 +230,6 @@ int llwrite(const unsigned char *buf, int bufSize) {
     int result;
     enum StateRCV ackState = START;
 
-    // Frame construction
     frame[index++] = FLAG;
     frame[index++] = ADDR_TX_COMMAND;
     frame[index++] = (Ns == 0) ? 0x00 : 0x80;
@@ -261,7 +260,6 @@ int llwrite(const unsigned char *buf, int bufSize) {
 
     frame[index++] = FLAG;
 
-    // Retry with exponential backoff
     int backoff = 1;
     while (retries < transmissions) {
         printf("[INFO] Sending frame (Attempt %d of %d)\n", retries + 1, transmissions);
@@ -271,7 +269,7 @@ int llwrite(const unsigned char *buf, int bufSize) {
             printf("[ERROR] Write operation failed (Attempt %d)\n", retries + 1);
             retries++;
             sleep(backoff);
-            backoff *= 2; // Exponential backoff
+            backoff *= 2;
             continue;
         }
 
@@ -281,7 +279,6 @@ int llwrite(const unsigned char *buf, int bufSize) {
         ackState = START;
         alarmTriggered = 0;
 
-        // Wait for RR or REJ
         while (ackState != RCV_STOP && !alarmTriggered) {
             unsigned char ackByte;
             int readResult = readByteSerialPort(&ackByte);
@@ -299,7 +296,6 @@ int llwrite(const unsigned char *buf, int bufSize) {
                 continue;
             }
 
-            // Acknowledgment handling logic
             switch (ackState) {
                 case START:
                     if (ackByte == FLAG) ackState = FLAG_RCV;
@@ -312,7 +308,6 @@ int llwrite(const unsigned char *buf, int bufSize) {
                     if (ackByte == CTRL_RR0 || ackByte == CTRL_RR1) {
                         int Nr = (ackByte == CTRL_RR0) ? 0 : 1;
                         if (Nr == Ns) {
-                            printf("[INFO] RR received, sequence %d confirmed\n", Ns);
                             Ns = (Ns + 1) % 2;
                             free(frame);
                             return bufSize;
@@ -359,16 +354,13 @@ int llread(unsigned char *packet) {
     unsigned char bcc2 = 0;
     int bytesRead = 0;
     int retries = 0;
-    static int expectedSequence = 0;
     int success = 0;
 
-    printf("[DEBUG] Starting llread with enhanced logic\n");
 
     while (state != RCV_STOP && retries < transmissions) {
         int res = readByteSerialPort(&byte);
 
         if (res <= 0) {
-            // Handle read failure or timeout
             if (++retries < transmissions) {
                 printf("[WARN] Read timeout or failure (retry %d of %d)\n", retries, transmissions);
                 sleep(timeout);
@@ -379,7 +371,6 @@ int llread(unsigned char *packet) {
             }
         }
 
-        // Filter out noise or irrelevant bytes outside of protocol range
         if (byte != FLAG && byte < 0x01 && byte > 0x7F) {
             printf("[WARN] Ignored invalid byte: %02x\n", byte);
             continue;
@@ -405,11 +396,11 @@ int llread(unsigned char *packet) {
                 break;
 
             case A_RCV:
-                if (byte == 0x00 || byte == 0x80) { // Sequence 0 or 1
+                if (byte == 0x00 || byte == 0x80) {
                     frame[frameIndex++] = byte;
                     state = C_RCV;
                 } else if (byte == FLAG) {
-                    state = FLAG_RCV; // Restart on new flag
+                    state = FLAG_RCV;
                 } else {
                     state = START;
                 }
@@ -428,10 +419,9 @@ int llread(unsigned char *packet) {
 
             case BCC_OK:
                 if (byte == FLAG) {
-                    // Verify BCC2 at the end of the frame
                     if (bcc2 == 0) {
                         state = RCV_STOP;
-                        sendRR(); // Acknowledge receipt
+                        sendRR();
                         printf("[INFO] Frame successfully received with sequence %d\n", expectedSequence);
                         expectedSequence = (expectedSequence + 1) % 2;
                         totalBytesReceived += bytesRead;
@@ -442,7 +432,6 @@ int llread(unsigned char *packet) {
                         state = START;
                     }
                 } else {
-                    // Byte stuffing handling
                     if (byte == 0x7D) {
                         int stuffedRes = readByteSerialPort(&byte);
                         if (stuffedRes > 0) {
@@ -451,12 +440,12 @@ int llread(unsigned char *packet) {
                         }
                     }
                     packet[bytesRead++] = byte;
-                    bcc2 ^= byte; // Update BCC2
+                    bcc2 ^= byte;
                 }
                 break;
 
             default:
-                state = START; // Reset to start if state is invalid
+                state = START; 
                 break;
         }
     }
@@ -580,8 +569,6 @@ int llclose(int showStatistics) {
 
             state = processStateForDISC(state, byte);
         }
-
-        // Send DISC frame back to transmitter
         sendDISC();
         printf("[INFO] DISC packet from receiver sent.\n");
 
@@ -609,7 +596,6 @@ int llclose(int showStatistics) {
     }
 
 cleanup:
-    printf("[INFO] Flushing the serial port before closure.\n");
     flushPort();
 
     clstat = closeSerialPort();
