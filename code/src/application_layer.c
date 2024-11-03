@@ -13,8 +13,8 @@
 #define PACKET_DATA 0x01
 #define MAX_DATA_SIZE 1000 //modify to change the chunk size
 
-extern double transmissionStartTime=0.0;
-extern double transmissionEndTime=0.0;
+double transmissionStartTime=0.0;
+double transmissionEndTime=0.0;
 
 int totalBytesSent = 0;
 int totalBytesReceived = 0;

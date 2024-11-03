@@ -260,7 +260,6 @@ int llwrite(const unsigned char *buf, int bufSize) {
 
     frame[index++] = FLAG;
 
-    int backoff = 1;
     while (retries < transmissions) {
         printf("[INFO] Sending frame (Attempt %d of %d)\n", retries + 1, transmissions);
 
@@ -268,8 +267,6 @@ int llwrite(const unsigned char *buf, int bufSize) {
         if (result < 0 || result != index) {
             printf("[ERROR] Write operation failed (Attempt %d)\n", retries + 1);
             retries++;
-            sleep(backoff);
-            backoff *= 2;
             continue;
         }
 
