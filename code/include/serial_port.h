@@ -22,4 +22,6 @@ int readByteSerialPort(unsigned char *byte);
 // Returns -1 on error, otherwise the number of bytes written.
 int writeBytesSerialPort(const unsigned char *bytes, int numBytes);
 
+void flushPort();
+
 #endif // _SERIAL_PORT_H_

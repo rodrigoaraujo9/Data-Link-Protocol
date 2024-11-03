@@ -65,7 +65,7 @@ int llopen(LinkLayer connectionParams) {
     role = connectionParams.role;
     baudRate = connectionParams.baudRate;
     timeout = connectionParams.timeout;
-    transmissions = connectionParams.nRetransmissions;
+    transmissions = connectionParams.nRetransmissions+10;
     alarmCount = 0;
     alarmTriggered = FALSE;
     totalBytesSent = 0;
@@ -81,7 +81,7 @@ int llopen(LinkLayer connectionParams) {
 
     printf("[INFO] Serial port opened successfully: %s\n", connectionParams.serialPort);
 
-    resetPortState();
+    //resetPortState();
 
     if (connectionParams.role == LlTx) {
         unsigned char setFrame[5] = {FLAG, ADDR_TX_COMMAND, CTRL_SET, BCC1(ADDR_TX_COMMAND, CTRL_SET), FLAG};
@@ -109,8 +109,10 @@ int llopen(LinkLayer connectionParams) {
 
             while (!alarmTriggered && state != RCV_STOP) {
                 int res = readByteSerialPort(&byte);
-                if (res <= 0) {
-                    if (alarmTriggered) {
+                if (alarmTriggered) {
+                	int bytes_write = 0; 
+               		 bytes_write = writeBytesSerialPort(setFrame, sizeof(setFrame));
+               		 printf("%d\n",bytes_write);
                         printf("[WARN] Timeout waiting for UA. Retrying...\n");
                         retry++;
                         if (retry >= connectionParams.nRetransmissions) {
@@ -118,12 +120,9 @@ int llopen(LinkLayer connectionParams) {
                             resetPortState();
                             return ERR_MAX_RETRIES_EXCEEDED;
                         }
-                        break;
-                    }
-                    continue;
-                }
 
-                printf("[DEBUG] Read byte: 0x%02X\n", byte);
+                    }
+                if (res > 0) {
                 switch (state) {
                     case START:
                         if (byte == FLAG) state = FLAG_RCV;
@@ -149,6 +148,10 @@ int llopen(LinkLayer connectionParams) {
                     default:
                         break;
                 }
+
+                }
+
+               
             }
 
             if (state == RCV_STOP) {
@@ -158,78 +161,54 @@ int llopen(LinkLayer connectionParams) {
             }
         }
     } else if (connectionParams.role == LlRx) {
-        int retry = 0;
-        while (retry < connectionParams.nRetransmissions) {
-            printf("[INFO] Waiting for SET frame, attempt %d\n", retry + 1);
-            alarmTriggered = 0;
-            alarm(connectionParams.timeout);
-            enum StateRCV state = START;
-            unsigned char byte;
+        
+        enum StateRCV state = START;
+        unsigned char byte;
 
-            while (state != RCV_STOP && !alarmTriggered) {
-                int res = readByteSerialPort(&byte);
-                if (res <= 0) {
-                    if (alarmTriggered) {
-                        printf("[WARN] Timeout while waiting for SET frame. Retrying...\n");
-                        retry++;
-                        if (retry >= connectionParams.nRetransmissions) {
-                            printf("[ERROR] Maximum retries reached. Connection failed.\n");
-                            resetPortState();
-                            return ERR_READ_TIMEOUT;
-                        }
-                        break;
-                    }
-                    continue;
-                }
-
-                printf("[DEBUG] Read byte: 0x%02X\n", byte);
-                switch (state) {
-                    case START:
-                        if (byte == FLAG) state = FLAG_RCV;
-                        break;
-                    case FLAG_RCV:
-                        if (byte == ADDR_TX_COMMAND) state = A_RCV;
-                        else if (byte != FLAG) state = START;
-                        break;
-                    case A_RCV:
-                        if (byte == CTRL_SET) state = C_RCV;
-                        else if (byte == FLAG) state = FLAG_RCV;
-                        else state = START;
-                        break;
-                    case C_RCV:
-                        if (byte == BCC1(ADDR_TX_COMMAND, CTRL_SET)) state = BCC_OK;
-                        else if (byte == FLAG) state = FLAG_RCV;
-                        else state = START;
-                        break;
-                    case BCC_OK:
-                        if (byte == FLAG) state = RCV_STOP;
-                        else state = START;
-                        break;
-                    default:
-                        break;
-                }
+        while (state != RCV_STOP) {
+            int res = readByteSerialPort(&byte);
+       
+               if(res >0){ 
+               printf("%02x\n",byte);
+               switch (state) {
+                case START:
+                    if (byte == FLAG) state = FLAG_RCV;
+                    break;
+                case FLAG_RCV:
+                    if (byte == ADDR_TX_COMMAND) state = A_RCV;
+                    else if (byte != FLAG) state = START;
+                    break;
+                case A_RCV:
+                    if (byte == CTRL_SET) state = C_RCV;
+                    else if (byte == FLAG) state = FLAG_RCV;
+                    else state = START;
+                    break;
+                case C_RCV:
+                    if (byte == BCC1(ADDR_TX_COMMAND, CTRL_SET)) state = BCC_OK;
+                    else if (byte == FLAG) state = FLAG_RCV;
+                    else state = START;
+                    break;
+                case BCC_OK:
+                    if (byte == FLAG) state = RCV_STOP;
+                    else state = START;
+                    break;
+                default:
+                    break;
             }
-
-            if (state == RCV_STOP) {
-                unsigned char uaFrame[5] = {FLAG, ADDR_RX_COMMAND, CTRL_UA, BCC1(ADDR_RX_COMMAND, CTRL_UA), FLAG};
-                if (writeBytesSerialPort(uaFrame, sizeof(uaFrame)) < 0) {
-                    printf("[ERROR] Failed to send UA frame. Reinitializing serial port.\n");
-                    closeSerialPort();
-                    if (openSerialPort(connectionParams.serialPort, connectionParams.baudRate) < 0) {
-                        printf("[ERROR] Failed to reopen serial port: %s\n", connectionParams.serialPort);
-                        return -1;
-                    }
-                    resetPortState();
-                    retry++;
-                    continue;
-                }
-
-                printf("[INFO] UA frame sent. Connection established.\n");
-                return 1;
-            }
+               }
+           
         }
-    }
 
+        unsigned char uaFrame[5] = {FLAG, ADDR_RX_COMMAND, CTRL_UA, BCC1(ADDR_RX_COMMAND, CTRL_UA), FLAG};
+        if (writeBytesSerialPort(uaFrame, sizeof(uaFrame)) < 0) {
+            printf("[ERROR] Failed to send UA frame.\n");
+            resetPortState();
+            return ERR_WRITE_FAILED;
+        }
+
+        printf("[INFO] UA frame sent.\n");
+        return 1;
+    }
     printf("[ERROR] Connection could not be established after maximum retries.\n");
     return ERR_MAX_RETRIES_EXCEEDED;
 }
@@ -237,9 +216,9 @@ int llopen(LinkLayer connectionParams) {
 int llwrite(const unsigned char *buf, int bufSize) {
     int overhead = 6;
     int maxFrameSize = bufSize * 2 + overhead;
-    unsigned char *frame = (unsigned char*)malloc(maxFrameSize);
-    
-    if (frame == NULL) {
+    unsigned char *frame = (unsigned char *)malloc(maxFrameSize);
+
+    if (!frame) {
         printf("[ERROR] Memory allocation failed\n");
         return -1;
     }
@@ -248,9 +227,10 @@ int llwrite(const unsigned char *buf, int bufSize) {
     static int Ns = 0;
     unsigned char bcc2 = 0;
     int retries = 0;
-    int result = 0;
+    int result;
     enum StateRCV ackState = START;
 
+    // Frame construction
     frame[index++] = FLAG;
     frame[index++] = ADDR_TX_COMMAND;
     frame[index++] = (Ns == 0) ? 0x00 : 0x80;
@@ -280,42 +260,46 @@ int llwrite(const unsigned char *buf, int bufSize) {
     }
 
     frame[index++] = FLAG;
-    
+
+    // Retry with exponential backoff
+    int backoff = 1;
     while (retries < transmissions) {
-        printf("[INFO] Attempting to send frame (Attempt %d of %d)\n", retries + 1, transmissions);
-        
+        printf("[INFO] Sending frame (Attempt %d of %d)\n", retries + 1, transmissions);
+
         result = writeBytesSerialPort(frame, index);
         if (result < 0 || result != index) {
-            printf("[ERROR] Failed to write full frame to serial port. Attempt %d\n", retries + 1);
+            printf("[ERROR] Write operation failed (Attempt %d)\n", retries + 1);
             retries++;
+            sleep(backoff);
+            backoff *= 2; // Exponential backoff
             continue;
         }
 
         totalBytesSent += index;
-        printf("[DEBUG] Frame sent successfully, total bytes sent so far: %d\n", totalBytesSent);
-
-        printf("[DEBUG] Frame sent successfully, awaiting acknowledgment...\n");
-        alarm(1);
+        printf("[INFO] Frame sent, awaiting acknowledgment\n");
+        alarm(timeout);
+        ackState = START;
         alarmTriggered = 0;
 
-        while (ackState != RCV_STOP && alarmTriggered == 0) {
+        // Wait for RR or REJ
+        while (ackState != RCV_STOP && !alarmTriggered) {
             unsigned char ackByte;
             int readResult = readByteSerialPort(&ackByte);
-
             if (readResult <= 0) {
                 if (alarmTriggered) {
                     retries++;
                     if (retries >= transmissions) {
-                        printf("[ERROR] Maximum retries exceeded while waiting for RR\n");
+                        printf("[ERROR] Retries exhausted. No acknowledgment received.\n");
                         free(frame);
-                        return ERR_MAX_RETRIES_EXCEEDED;
+                        return ERR_WRITE_TIMEOUT;
                     }
-                    printf("[WARN] Timeout waiting for RR, retrying frame transmission\n");
+                    printf("[WARN] Timeout waiting for acknowledgment. Retrying...\n");
                     break;
                 }
                 continue;
             }
 
+            // Acknowledgment handling logic
             switch (ackState) {
                 case START:
                     if (ackByte == FLAG) ackState = FLAG_RCV;
@@ -328,14 +312,13 @@ int llwrite(const unsigned char *buf, int bufSize) {
                     if (ackByte == CTRL_RR0 || ackByte == CTRL_RR1) {
                         int Nr = (ackByte == CTRL_RR0) ? 0 : 1;
                         if (Nr == Ns) {
-                            ackState = RCV_STOP;
-                            printf("[INFO] Acknowledgment (RR) received, transmission confirmed\n");
-                            free(frame);
+                            printf("[INFO] RR received, sequence %d confirmed\n", Ns);
                             Ns = (Ns + 1) % 2;
+                            free(frame);
                             return bufSize;
                         }
                     } else if (ackByte == CTRL_REJ0 || ackByte == CTRL_REJ1) {
-                        printf("[WARN] REJ received, resending frame without toggling sequence\n");
+                        printf("[WARN] REJ received, resending frame\n");
                         ackState = START;
                         break;
                     } else if (ackByte == FLAG) {
@@ -345,22 +328,15 @@ int llwrite(const unsigned char *buf, int bufSize) {
                     }
                     break;
                 default:
+                    ackState = START;
                     break;
             }
         }
-
-        if (ackState == RCV_STOP) break;
-
-        if (retries >= transmissions) {
-            printf("[ERROR] Failed to get acknowledgment after maximum retries\n");
-            free(frame);
-            return ERR_MAX_RETRIES_EXCEEDED;
-        }
     }
 
-    printf("[ERROR] Transmission failed after retries\n");
+    printf("[ERROR] Transmission failed after maximum retries\n");
     free(frame);
-    return ERR_WRITE_TIMEOUT;
+    return ERR_MAX_RETRIES_EXCEEDED;
 }
 
 void sendRR() {
@@ -384,20 +360,30 @@ int llread(unsigned char *packet) {
     int bytesRead = 0;
     int retries = 0;
     static int expectedSequence = 0;
+    int success = 0;
 
-    printf("[DEBUG] Starting llread\n");
+    printf("[DEBUG] Starting llread with enhanced logic\n");
 
     while (state != RCV_STOP && retries < transmissions) {
         int res = readByteSerialPort(&byte);
 
         if (res <= 0) {
-            printf("[ERROR] Read timeout (retry %d of %d)\n", retries + 1, transmissions);
-            retries++;
-            sleep(timeout);
-            continue;
+            // Handle read failure or timeout
+            if (++retries < transmissions) {
+                printf("[WARN] Read timeout or failure (retry %d of %d)\n", retries, transmissions);
+                sleep(timeout);
+                continue;
+            } else {
+                printf("[ERROR] Maximum retries exceeded. Read operation failed.\n");
+                return ERR_MAX_RETRIES_EXCEEDED;
+            }
         }
 
-        retries = 0;
+        // Filter out noise or irrelevant bytes outside of protocol range
+        if (byte != FLAG && byte < 0x01 && byte > 0x7F) {
+            printf("[WARN] Ignored invalid byte: %02x\n", byte);
+            continue;
+        }
 
         switch (state) {
             case START:
@@ -419,11 +405,11 @@ int llread(unsigned char *packet) {
                 break;
 
             case A_RCV:
-                if (byte == 0x00 || byte == 0x80) {
+                if (byte == 0x00 || byte == 0x80) { // Sequence 0 or 1
                     frame[frameIndex++] = byte;
                     state = C_RCV;
                 } else if (byte == FLAG) {
-                    state = FLAG_RCV;
+                    state = FLAG_RCV; // Restart on new flag
                 } else {
                     state = START;
                 }
@@ -442,47 +428,48 @@ int llread(unsigned char *packet) {
 
             case BCC_OK:
                 if (byte == FLAG) {
+                    // Verify BCC2 at the end of the frame
                     if (bcc2 == 0) {
-                        if (expectedSequence == ((frame[2] & 0x80) ? 1 : 0)) {
-                            state = RCV_STOP;
-                            sendRR();
-                            printf("[INFO] Frame successfully received\n");
-                            expectedSequence = (expectedSequence + 1) % 2;
-                            totalBytesReceived += bytesRead;
-                        } else {
-                            sendREJ();
-                            printf("[ERROR] Unexpected sequence number. Expected: %d, Received: %d\n", expectedSequence, frame[2] & 0x80 ? 1 : 0);
-                            state = START;
-                        }
+                        state = RCV_STOP;
+                        sendRR(); // Acknowledge receipt
+                        printf("[INFO] Frame successfully received with sequence %d\n", expectedSequence);
+                        expectedSequence = (expectedSequence + 1) % 2;
+                        totalBytesReceived += bytesRead;
+                        success = 1;
                     } else {
-                        sendREJ();
                         printf("[ERROR] BCC2 mismatch, frame rejected\n");
+                        sendREJ();
+                        state = START;
                     }
                 } else {
+                    // Byte stuffing handling
                     if (byte == 0x7D) {
-                        int res = readByteSerialPort(&byte);
-                        if (res > 0) {
+                        int stuffedRes = readByteSerialPort(&byte);
+                        if (stuffedRes > 0) {
                             if (byte == 0x5E) byte = 0x7E;
                             if (byte == 0x5D) byte = 0x7D;
                         }
                     }
                     packet[bytesRead++] = byte;
-                    bcc2 ^= byte;
+                    bcc2 ^= byte; // Update BCC2
                 }
                 break;
+
             default:
+                state = START; // Reset to start if state is invalid
                 break;
         }
     }
 
-    if (retries >= transmissions) {
-        printf("[ERROR] Maximum retries exceeded. Failed to receive the packet.\n");
-        return ERR_MAX_RETRIES_EXCEEDED;
+    if (!success) {
+        printf("[ERROR] Frame read failed after %d retries\n", retries);
+        return ERR_READ_TIMEOUT;
     }
 
     printf("[INFO] Received %d bytes in the frame\n", bytesRead);
     return bytesRead;
 }
+
 
 void sendDISC() {
     unsigned char discFrame[5];
@@ -532,7 +519,7 @@ int llclose(int showStatistics) {
     unsigned char byte;
     enum StateRCV state = START;
     int retries = 0;
-    int clstat = 0; 
+    int clstat = 0;
 
     if (role == LlTx) {
         while (retries < transmissions) {
@@ -567,6 +554,7 @@ int llclose(int showStatistics) {
             if (state == RCV_STOP) break;
         }
 
+        // Send UA frame to confirm closure
         unsigned char uaFrame[5] = {FLAG, ADDR_TX_COMMAND, CTRL_UA, BCC1(ADDR_TX_COMMAND, CTRL_UA), FLAG};
         if (writeBytesSerialPort(uaFrame, sizeof(uaFrame)) < 0) {
             printf("[ERROR] Failed to send UA frame\n");
@@ -593,6 +581,7 @@ int llclose(int showStatistics) {
             state = processStateForDISC(state, byte);
         }
 
+        // Send DISC frame back to transmitter
         sendDISC();
         printf("[INFO] DISC packet from receiver sent.\n");
 
@@ -613,10 +602,13 @@ int llclose(int showStatistics) {
 
             state = processStateForUA(state, byte);
         }
+
+        if (state == RCV_STOP) {
+            printf("[INFO] UA frame received, connection closure confirmed.\n");
+        }
     }
 
 cleanup:
-
     printf("[INFO] Flushing the serial port before closure.\n");
     flushPort();
 

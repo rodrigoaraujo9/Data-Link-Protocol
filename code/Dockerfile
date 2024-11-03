@@ -6,7 +6,8 @@ RUN apt-get update && apt-get install -y \
     gcc \
     make \
     socat \
-    build-essential
+    build-essential \
+    net-tools
 
 # Copy the whole project to the container
 COPY . /usr/src/app
@@ -17,5 +18,8 @@ WORKDIR /usr/src/app
 # Build the project using Makefile
 RUN make
 
-# Run the compiled binary for the cable program
+# Expose necessary ports (optional, for debugging purposes)
+EXPOSE 9600
+
+# Run the compiled binary for the cable program by default
 CMD ["./bin/cable"]

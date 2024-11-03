@@ -10,8 +10,8 @@ INCLUDE = include/
 BIN = bin/
 CABLE_DIR = cable/
 
-TX_SERIAL_PORT = /dev/pts/0   # Use the correct pts
-RX_SERIAL_PORT = /dev/pts/1   # Use the correct pts
+TX_SERIAL_PORT = /dev/ttyS10   # Use the correct virtual serial port
+RX_SERIAL_PORT = /dev/ttyS11  # Use the correct pts
 
 
 BAUD_RATE = 9600
