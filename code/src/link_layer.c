@@ -540,7 +540,6 @@ int llclose(int showStatistics) {
             if (state == RCV_STOP) break;
         }
 
-        // Send UA frame to confirm closure
         unsigned char uaFrame[5] = {FLAG, ADDR_TX_COMMAND, CTRL_UA, BCC1(ADDR_TX_COMMAND, CTRL_UA), FLAG};
         if (writeBytesSerialPort(uaFrame, sizeof(uaFrame)) < 0) {
             printf("[ERROR] Failed to send UA frame\n");

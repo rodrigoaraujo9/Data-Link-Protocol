@@ -19,7 +19,6 @@ double transmissionEndTime=0.0;
 int totalBytesSent = 0;
 int totalBytesReceived = 0;
 
-
 double calculateReceivedBitrate(int totalBytes, double transmissionTime) {
     int totalBits = totalBytes * 8;
     return totalBits / transmissionTime;
